@@ -10,6 +10,8 @@ import android.os.Bundle;
 import android.os.IBinder;
 import android.util.Log;
 
+import moe.shizuku.api.BinderContainer;
+
 /**
  * ShizukuProvider — nhận binder từ Shizuku server.
  *

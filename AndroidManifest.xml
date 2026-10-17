@@ -22,6 +22,11 @@
         android:theme="@style/AppTheme"
         android:requestLegacyExternalStorage="true">
 
+        <!-- BẮT BUỘC để hiện trong danh sách Shizuku -->
+        <meta-data
+            android:name="moe.shizuku.client.V3_SUPPORT"
+            android:value="true" />
+
         <activity
             android:name=".MainActivity"
             android:exported="true">

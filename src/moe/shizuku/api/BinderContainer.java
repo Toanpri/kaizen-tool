@@ -1,4 +1,4 @@
-package com.kaizen.tool;
+package moe.shizuku.api;
 
 import android.os.IBinder;
 import android.os.Parcel;

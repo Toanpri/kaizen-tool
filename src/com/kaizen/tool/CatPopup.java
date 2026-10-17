@@ -97,5 +97,33 @@ public class CatPopup {
         contentGroup.addView(wrapper, new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        // Fix dark mode: nền dialog luôn hồng nhạt -> ép chữ sang màu tối
+        // để đọc được (tránh chữ trắng trên nền sáng)
+        forceDarkText(oldRoot);
+    }
+
+    /**
+     * Duyệt view hierarchy, đặt màu chữ tối cho mọi TextView
+     * (trừ nút bấm đã có màu riêng).
+     */
+    private static void forceDarkText(View v) {
+        if (v instanceof ViewGroup) {
+            ViewGroup vg = (ViewGroup) v;
+            for (int i = 0; i < vg.getChildCount(); i++) {
+                forceDarkText(vg.getChildAt(i));
+            }
+        } else if (v instanceof android.widget.TextView) {
+            android.widget.TextView tv = (android.widget.TextView) v;
+            // Bỏ qua nút (Button) — giữ màu hồng
+            if (!(v instanceof android.widget.Button)) {
+                tv.setTextColor(0xFF333333);
+            }
+            // EditText: chữ tối, hint xám
+            if (v instanceof android.widget.EditText) {
+                tv.setTextColor(0xFF333333);
+                ((android.widget.EditText) v).setHintTextColor(0xFF999999);
+            }
+        }
     }
 }

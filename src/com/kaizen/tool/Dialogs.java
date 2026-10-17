@@ -9,6 +9,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
 import android.view.Gravity;
+import android.widget.CheckBox;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -115,7 +116,19 @@ public class Dialogs {
     // ------------------------------------------------------------------
 
     public static void showProperties(final Activity a, final File f) {
-        if (a == null || f == null || !f.exists()) return;
+        showProperties(a, f, false, f != null && f.isDirectory());
+    }
+
+    /**
+     * v1.1-m1: version hỗ trợ file từ Shizuku.
+     * @param viaShizuku true nếu file từ Shizuku (bỏ qua f.exists(), dùng isDir truyền vào)
+     * @param isDir true nếu là thư mục (chỉ dùng khi viaShizuku=true)
+     */
+    public static void showProperties(final Activity a, final File f,
+                                     final boolean viaShizuku, final boolean isDir) {
+        if (a == null || f == null) return;
+        if (!viaShizuku && !f.exists()) return;
+        boolean isDirectory = viaShizuku ? isDir : f.isDirectory();
 
         LinearLayout layout = new LinearLayout(a);
         layout.setOrientation(LinearLayout.VERTICAL);
@@ -124,11 +137,82 @@ public class Dialogs {
 
         TextView tvName = row(a, layout, "Tên: ", f.getName());
         row(a, layout, "Đường dẫn: ", f.getAbsolutePath());
-        row(a, layout, "Loại: ", f.isDirectory() ? "Thư mục" : "Tệp");
+        row(a, layout, "Loại: ", isDirectory ? "Thư mục" : "Tệp");
         final TextView tvSize = row(a, layout, "Kích thước: ",
-                f.isDirectory() ? "đang tính..." : FileOps.formatSize(f.length()));
+                isDirectory ? "đang tính..." : FileOps.formatSize(f.length()));
         row(a, layout, "Ngày sửa: ", FileOps.formatDate(f.lastModified()));
         row(a, layout, "Quyền: ", (f.canRead() ? "đọc " : "") + (f.canWrite() ? "ghi" : ""));
+
+        // v1.1-m1: checkbox "Vô hiệu hoá quét đa phương tiện" (.nomedia) như ZArchiver
+        // -> ẩn ảnh/video trong thư mục khỏi Gallery
+        if (isDirectory) {
+            final CheckBox nomediaBox = new CheckBox(a);
+            nomediaBox.setText("Vô hiệu hoá quét đa phương tiện");
+            nomediaBox.setTextColor(0xFF333333);
+            int cp = dp(a, 8);
+            nomediaBox.setPadding(0, cp, 0, 0);
+            final java.io.File nomediaFile = new java.io.File(f, ".nomedia");
+            final boolean isShizukuPath =
+                    ShizukuFileHelper.needsShizuku(f.getAbsolutePath());
+            // Kiểm tra trạng thái hiện tại
+            boolean hasNomedia;
+            if (isShizukuPath && ShizukuHelper.isRunning()) {
+                String out = ShizukuFileHelper.runCommand(
+                        "ls", nomediaFile.getAbsolutePath());
+                hasNomedia = out != null && !out.startsWith("ERROR:");
+            } else {
+                hasNomedia = nomediaFile.exists();
+            }
+            nomediaBox.setChecked(hasNomedia);
+            nomediaBox.setOnCheckedChangeListener(
+                    new android.widget.CompoundButton.OnCheckedChangeListener() {
+                @Override
+                public void onCheckedChanged(
+                        android.widget.CompoundButton buttonView, final boolean isChecked) {
+                    if (isShizukuPath && ShizukuHelper.isRunning()) {
+                        // Chạy background để không block UI
+                        new Thread(new Runnable() {
+                            @Override public void run() {
+                                if (isChecked) {
+                                    ShizukuFileHelper.runCommand(
+                                            "touch", nomediaFile.getAbsolutePath());
+                                } else {
+                                    ShizukuFileHelper.runCommand(
+                                            "rm", nomediaFile.getAbsolutePath());
+                                }
+                                // Báo MediaScanner quét lại
+                                try {
+                                    a.sendBroadcast(new android.content.Intent(
+                                            android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE,
+                                            android.net.Uri.fromFile(f)));
+                                } catch (Exception ignored) {}
+                            }
+                        }).start();
+                    } else {
+                        try {
+                            if (isChecked) {
+                                nomediaFile.createNewFile();
+                            } else {
+                                nomediaFile.delete();
+                            }
+                        } catch (Exception e) {
+                            android.widget.Toast.makeText(a,
+                                    "Lỗi: " + e.getMessage(),
+                                    android.widget.Toast.LENGTH_SHORT).show();
+                            // Hoàn tác checkbox nếu thất bại
+                            nomediaBox.setChecked(!isChecked);
+                        }
+                        // Báo cho MediaScanner quét lại
+                        try {
+                            a.sendBroadcast(new android.content.Intent(
+                                    android.content.Intent.ACTION_MEDIA_SCANNER_SCAN_FILE,
+                                    android.net.Uri.fromFile(f)));
+                        } catch (Exception ignored) {}
+                    }
+                }
+            });
+            layout.addView(nomediaBox);
+        }
 
         new CatBuilder(a, R.style.DialogTheme)
                 .setTitle("Thuộc tính")
@@ -137,7 +221,8 @@ public class Dialogs {
                 .show();
 
         // Folder size is computed on a background thread, then posted to UI.
-        if (f.isDirectory()) {
+        // v1.1-m1: bỏ qua với Shizuku (File API không đọc được)
+        if (isDirectory && !viaShizuku) {
             final String path = f.getAbsolutePath();
             new Thread(new Runnable() {
                 @Override

@@ -184,13 +184,47 @@ public class SettingsActivity extends Activity {
         }
         if (ShizukuHelper.hasPermission()) {
             refreshShizukuUi();
-            Toast.makeText(this, "Shizuku đang hoạt động tốt",
-                    Toast.LENGTH_SHORT).show();
+            // Test Shizuku: echo + ls /Android/data
+            new Thread(new Runnable() {
+                @Override public void run() {
+                    final String echoResult = ShizukuFileHelper.runCommand("echo", "hello-shizuku");
+                    final String lsResult = ShizukuFileHelper.runCommand(
+                            "ls", "-la", "/storage/emulated/0/Android/data");
+                    final boolean permFlag = ShizukuHelper.isPermissionGranted();
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            boolean echoOk = echoResult != null
+                                    && echoResult.contains("hello-shizuku");
+                            String lsPreview = lsResult == null ? "null"
+                                    : lsResult.length() > 200
+                                            ? lsResult.substring(0, 200) + "..."
+                                            : lsResult;
+                            if (echoOk) {
+                                new CatBuilder(SettingsActivity.this, R.style.DialogTheme)
+                                        .setTitle("Shizuku test")
+                                        .setMessage("✓ echo OK!"
+                                                + "\n\nls /Android/data:\n" + lsPreview
+                                                + "\n\nPermission callback: " + permFlag)
+                                        .setPositiveButton("OK", null)
+                                        .show();
+                            } else {
+                                new CatBuilder(SettingsActivity.this, R.style.DialogTheme)
+                                        .setTitle("Shizuku test thất bại")
+                                        .setMessage("Kết quả: " + (echoResult == null ? "null" : echoResult)
+                                                + "\n\nPermission callback: " + permFlag
+                                                + "\n\nChụp màn hình này gửi cho Gose nhé!")
+                                        .setPositiveButton("OK", null)
+                                        .show();
+                            }
+                        }
+                    });
+                }
+            }).start();
             return;
         }
-        // Xin quyền — kết quả về qua OnRequestPermissionResultListener
-        if (!ShizukuHelper.requestPermission(SHIZUKU_REQ)) {
-            Toast.makeText(this, "Không gửi được yêu cầu quyền",
+        // Xin quyền — mở app Shizuku để user bật toggle
+        if (!ShizukuHelper.requestPermission(this, SHIZUKU_REQ)) {
+            Toast.makeText(this, "Không mở được app Shizuku",
                     Toast.LENGTH_SHORT).show();
         }
     }

@@ -38,12 +38,31 @@ public class FileAdapter extends BaseAdapter {
     private String filter = null;
     private final List<Integer> visibleIdx = new ArrayList<Integer>();
     private final ThumbnailLoader thumbnails;
+    /** v1.1-m1: cache app icon theo package name (cho /Android/data) */
+    private final java.util.Map<String, android.graphics.drawable.Drawable> appIconCache =
+            new java.util.HashMap<String, android.graphics.drawable.Drawable>();
 
     public FileAdapter(Context context, List<FileItem> items) {
         this.context = context;
         this.items = items;
         this.thumbnails = new ThumbnailLoader(context);
         rebuildVisible();
+    }
+
+    /** v1.1-m1: lấy icon app từ package name (có cache) */
+    private android.graphics.drawable.Drawable getAppIcon(String packageName) {
+        if (packageName == null) return null;
+        android.graphics.drawable.Drawable cached = appIconCache.get(packageName);
+        if (cached != null) return cached;
+        try {
+            android.graphics.drawable.Drawable icon = context.getPackageManager()
+                    .getApplicationIcon(packageName);
+            // Cache cả null (dùng placeholder để tránh lookup lại)
+            appIconCache.put(packageName, icon);
+            return icon;
+        } catch (Exception e) {
+            return null;
+        }
     }
 
     /** Release background threads + bitmap cache (call from Activity.onDestroy). */
@@ -232,10 +251,23 @@ public class FileAdapter extends BaseAdapter {
             holder = (ViewHolder) convertView.getTag();
         }
 
-        // Async thumbnail for image/video/apk, fallback icon otherwise
-        thumbnails.load(item, holder.icon, iconResFor(item));
+        // v1.1-m1: nếu là folder app (/Android/data), hiện icon app + tên app
+        if (item.packageName != null) {
+            android.graphics.drawable.Drawable appIcon = getAppIcon(item.packageName);
+            if (appIcon != null) {
+                holder.icon.setImageDrawable(appIcon);
+            } else {
+                thumbnails.load(item, holder.icon, iconResFor(item));
+            }
+        } else {
+            // Async thumbnail for image/video/apk, fallback icon otherwise
+            thumbnails.load(item, holder.icon, iconResFor(item));
+        }
         holder.name.setText(item.name);
-        if (item.isDir) {
+        if (item.appLabel != null) {
+            // Hiện tên app như MT Manager (thay vì "Trống")
+            holder.info.setText(item.appLabel);
+        } else if (item.isDir) {
             holder.info.setText(childCountText(item.childCount));
         } else {
             holder.info.setText(
@@ -284,7 +316,17 @@ public class FileAdapter extends BaseAdapter {
         } else {
             h = (GridHolder) convertView.getTag();
         }
-        thumbnails.load(item, h.icon, iconResFor(item));
+        // v1.1-m1: nếu là folder app, hiện icon app
+        if (item.packageName != null) {
+            android.graphics.drawable.Drawable appIcon = getAppIcon(item.packageName);
+            if (appIcon != null) {
+                h.icon.setImageDrawable(appIcon);
+            } else {
+                thumbnails.load(item, h.icon, iconResFor(item));
+            }
+        } else {
+            thumbnails.load(item, h.icon, iconResFor(item));
+        }
         h.name.setText(item.name);
         if (selected.contains(item.path())) {
             h.root.setBackgroundColor(

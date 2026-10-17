@@ -14,6 +14,12 @@ public class FileItem {
     public final long lastModified;
     /** child count for directories; -1 if the listing failed */
     public final int childCount;
+    /** v1.1-m1: package name nếu folder này là /Android/data/<package> */
+    public String packageName;
+    /** v1.1-m1: tên app hiển thị (từ PackageManager) */
+    public String appLabel;
+    /** v1.1-m1: true nếu item này liệt kê qua Shizuku (cần copy ra cache trước khi mở) */
+    public boolean viaShizuku = false;
 
     public FileItem(File f) {
         this.file = f;
