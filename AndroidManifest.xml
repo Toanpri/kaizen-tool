@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.kaizen.tool"
-    android:versionCode="5"
-    android:versionName="1.0-m5">
+    android:versionCode="6"
+    android:versionName="1.1-m1">
 
     <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="30" />
 
@@ -51,6 +51,15 @@
             android:authorities="com.kaizen.tool.fileprovider"
             android:exported="false"
             android:grantUriPermissions="true" />
+
+        <!-- v1.1-m1: Shizuku binder receiver (custom, không dùng lib chính thức) -->
+        <provider
+            android:name="com.kaizen.tool.ShizukuProvider"
+            android:authorities="com.kaizen.tool.shizuku"
+            android:multiprocess="false"
+            android:enabled="true"
+            android:exported="true"
+            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
 
     </application>
 
