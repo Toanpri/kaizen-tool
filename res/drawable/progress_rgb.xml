@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Rainbow (RGB) progress drawable cho dialog tiến trình Kaizen Tool.
+     Lưu ý: <item> nhiều màu trong <gradient> chỉ được parse đầy đủ từ API 24.
+     Code Java (ArchiveDialogs) có fallback dựng GradientDrawable nhiều màu
+     bằng tay cho API < 24, nên hiển thị đúng trên mọi máy. -->
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+    <item android:id="@android:id/background">
+        <shape android:shape="rectangle">
+            <corners android:radius="8dp" />
+            <solid android:color="#F3E0E8" />
+        </shape>
+    </item>
+    <item android:id="@android:id/progress">
+        <clip>
+            <shape android:shape="rectangle">
+                <corners android:radius="8dp" />
+                <gradient
+                    android:type="linear"
+                    android:angle="0">
+                    <item android:offset="0.0" android:color="#FFFF1744" />
+                    <item android:offset="0.2" android:color="#FFFF9100" />
+                    <item android:offset="0.4" android:color="#FFFFEA00" />
+                    <item android:offset="0.6" android:color="#FF00E676" />
+                    <item android:offset="0.8" android:color="#FF2979FF" />
+                    <item android:offset="1.0" android:color="#FFD500F9" />
+                </gradient>
+            </shape>
+        </clip>
+    </item>
+</layer-list>

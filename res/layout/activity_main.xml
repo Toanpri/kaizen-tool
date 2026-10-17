@@ -1,0 +1,141 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Root is a plain FrameLayout; the left drawer is a manual sliding panel
+     (no AndroidX DrawerLayout in this project). -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/drawer_layout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent">
+
+    <!-- Main content -->
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="match_parent">
+
+        <!-- Rem background — always on, behind the file list -->
+        <ImageView
+            android:id="@+id/bg"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:alpha="0.55"
+            android:scaleType="centerCrop"
+            android:src="@drawable/bg_rem" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:orientation="vertical">
+
+            <include layout="@layout/toolbar_main" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider" />
+
+            <com.kaizen.tool.PullRefreshLayout
+                android:id="@+id/pull_refresh"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent">
+
+                <ListView
+                    android:id="@+id/file_list"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@android:color/transparent"
+                    android:divider="@color/divider"
+                    android:dividerHeight="1dp"
+                    android:scrollbars="vertical" />
+
+                <GridView
+                    android:id="@+id/file_grid"
+                    android:layout_width="match_parent"
+                    android:layout_height="match_parent"
+                    android:background="@android:color/transparent"
+                    android:horizontalSpacing="8dp"
+                    android:numColumns="3"
+                    android:padding="8dp"
+                    android:stretchMode="columnWidth"
+                    android:verticalSpacing="8dp"
+                    android:visibility="gone" />
+
+            </com.kaizen.tool.PullRefreshLayout>
+
+                <TextView
+                    android:id="@+id/empty_view"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:text="Thư mục trống"
+                    android:textColor="@color/textSecondary"
+                    android:textSize="16sp"
+                    android:visibility="gone" />
+
+                <ProgressBar
+                    android:id="@+id/progress"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center"
+                    android:indeterminateTint="@color/colorPrimary"
+                    android:visibility="gone" />
+        </LinearLayout>
+
+        <!-- M5: FAB Dán lơ lửng góc dưới-phải khi đang ở chế độ copy/cut -->
+        <FrameLayout
+            android:id="@+id/fab_paste_container"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="16dp"
+            android:visibility="gone">
+
+            <ImageButton
+                android:id="@+id/fab_paste"
+                android:layout_width="56dp"
+                android:layout_height="56dp"
+                android:background="@drawable/fab_pink"
+                android:contentDescription="Dán"
+                android:elevation="8dp"
+                android:src="@drawable/ic_paste" />
+
+            <TextView
+                android:id="@+id/fab_paste_badge"
+                android:layout_width="24dp"
+                android:layout_height="24dp"
+                android:layout_gravity="top|end"
+                android:background="@drawable/badge_red"
+                android:gravity="center"
+                android:text="0"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+        </FrameLayout>
+    </FrameLayout>
+
+    <!-- Scrim behind drawer -->
+    <View
+        android:id="@+id/drawer_scrim"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#80000000"
+        android:visibility="gone" />
+
+    <!-- Sliding drawer panel -->
+    <LinearLayout
+        android:id="@+id/drawer_panel"
+        android:layout_width="280dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="@color/cardBackground"
+        android:elevation="16dp"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <include layout="@layout/drawer_header" />
+
+        <ListView
+            android:id="@+id/drawer_list"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:divider="@color/divider"
+            android:dividerHeight="1dp" />
+    </LinearLayout>
+</FrameLayout>

@@ -1,0 +1,2356 @@
+/*
+ * Copyright (c) 2007 innoSysTec (R) GmbH, Germany. All rights reserved.
+ * Original author: Edmund Wagner
+ * Creation date: 22.05.2007
+ *
+ * Source: $HeadURL$
+ * Last changed: $LastChangedDate$
+ *
+ * the unrar licence applies to all junrar source and binary distributions
+ * you are not allowed to use this source to re-create the RAR compression
+ * algorithm
+ *
+ * Here some html entities which can be used for escaping javadoc tags:
+ * "&":  "&#038;" or "&amp;"
+ * "<":  "&#060;" or "&lt;"
+ * ">":  "&#062;" or "&gt;"
+ * "@":  "&#064;"
+ */
+package com.github.junrar;
+
+import com.github.junrar.crc.RarCRC;
+import com.github.junrar.crypt.Rar5Crypt;
+import com.github.junrar.crypt.Rijndael;
+import com.github.junrar.exception.BadRarArchiveException;
+import com.github.junrar.exception.CorruptHeaderException;
+import com.github.junrar.exception.CrcErrorException;
+import com.github.junrar.exception.HeaderNotInArchiveException;
+import com.github.junrar.exception.InitDeciphererFailedException;
+import com.github.junrar.exception.MainHeaderNullException;
+import com.github.junrar.exception.MissingPreviousVolumeException;
+import com.github.junrar.exception.NotRarArchiveException;
+import com.github.junrar.exception.RarException;
+import com.github.junrar.exception.UnsupportedRarEncryptedException;
+import com.github.junrar.exception.UnsupportedRarMethodException;
+import com.github.junrar.exception.UnsupportedRarVersionException;
+import com.github.junrar.exception.WrongPasswordException;
+import com.github.junrar.io.Raw;
+import com.github.junrar.io.RawDataIo;
+import com.github.junrar.io.SeekableReadOnlyByteChannel;
+import com.github.junrar.rarfile.AVHeader;
+import com.github.junrar.rarfile.BaseBlock;
+import com.github.junrar.rarfile.BlockHeader;
+import com.github.junrar.rarfile.CommentHeader;
+import com.github.junrar.rarfile.EAHeader;
+import com.github.junrar.rarfile.EndArcHeader;
+import com.github.junrar.rarfile.FileHeader;
+import com.github.junrar.rarfile.MacInfoHeader;
+import com.github.junrar.rarfile.MainHeader;
+import com.github.junrar.rarfile.MarkHeader;
+import com.github.junrar.rarfile.ProtectHeader;
+import com.github.junrar.rarfile.Rar14HeaderReader;
+import com.github.junrar.rarfile.Rar5FileHeaderReader;
+import com.github.junrar.rarfile.SignHeader;
+import com.github.junrar.rarfile.SubBlockHeader;
+import com.github.junrar.rarfile.SubBlockHeaderType;
+import com.github.junrar.rarfile.UnixOwnersHeader;
+import com.github.junrar.rarfile.UnrarHeadertype;
+import com.github.junrar.rarfile.rar5.Rar5BaseBlock;
+import com.github.junrar.rarfile.rar5.Rar5BlockType;
+import com.github.junrar.rarfile.rar5.Rar5HashType;
+import com.github.junrar.rarfile.rar5.Rar5MainHeader;
+import com.github.junrar.unpack.ComprDataIO;
+import com.github.junrar.unpack.Unpack;
+import com.github.junrar.unpack.Unpack5;
+import com.github.junrar.volume.FileVolumeManager;
+import com.github.junrar.volume.InputStreamVolumeManager;
+import com.github.junrar.volume.Volume;
+import com.github.junrar.volume.VolumeManager;
+import java.io.Closeable;
+import java.io.EOFException;
+import java.io.File;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.OutputStream;
+import java.io.PipedInputStream;
+import java.io.PipedOutputStream;
+import java.security.GeneralSecurityException;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collections;
+import java.util.HashSet;
+import java.util.Iterator;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.SynchronousQueue;
+import java.util.concurrent.ThreadPoolExecutor;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Function;
+import javax.crypto.Cipher;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+/**
+ * The Main Rar Class; represents a rar Archive
+ *
+ * <p>An {@code Archive} is not thread-safe: use one from a single thread at a time, and do not
+ * read two streams from {@link #getInputStream(FileHeader)} concurrently.
+ *
+ * @author $LastChangedBy$
+ * @version $LastChangedRevision$
+ */
+public class Archive implements Closeable, Iterable<FileHeader> {
+
+    private static final Logger logger = LoggerFactory.getLogger(Archive.class);
+
+    private static final int MAX_HEADER_SIZE = 20971520; // 20MB
+
+    /**
+     * SFX-stub search bound (unrar {@code MAXSFXSIZE}, {@code d861246:rardefs.hpp} = 4 MB):
+     * the RAR marker may sit behind up to this many bytes of self-extractor code.
+     */
+    private static final int MAXSFXSIZE = 0x400000; // 4 MB
+
+    /** RAR5 marker length (unrar {@code SIZEOF_MARKHEAD5}, {@code d861246:headers5.hpp:4}). */
+    private static final int SIZEOF_MARKHEAD5 = 8;
+
+    /**
+     * unrar {@code SIZEOF_MAINHEAD14} (P1, issue #293; {@code d861246:headers.hpp}): the
+     * entire RAR 1.4 main header, marker included -- mark(4) + HeadSize u16(2) + Flags u8(1).
+     * unrar's {@code ReadHeader14} re-reads the marker as part of this block ({@code
+     * Raw.GetB(Mark,4)}, {@code arcread.cpp:1263}); junrar re-validates it the same way.
+     */
+    private static final int SIZEOF_MAINHEAD14 = 7;
+
+    // Signature classification (unrar RARFORMAT, d861246:archive.cpp:100-126).
+    private static final int SIG_NONE = 0;
+    private static final int SIG_RAR14 = 4;
+    private static final int SIG_RAR15 = 1;
+    private static final int SIG_RAR50 = 2;
+    private static final int SIG_FUTURE = 3;
+
+    private static final int PIPE_BUFFER_SIZE =
+            getPropertyAs("junrar.extractor.buffer-size", Integer::parseInt, 32 * 1024);
+
+    private static final boolean USE_EXECUTOR =
+            getPropertyAs("junrar.extractor.use-executor", Boolean::parseBoolean, true);
+
+    private SeekableReadOnlyByteChannel channel;
+
+    private final UnrarCallback unrarCallback;
+
+    private final ComprDataIO dataIO;
+
+    private final List<BaseBlock> headers = new ArrayList<>();
+
+    private MarkHeader markHead = null;
+
+    private RarFormat format = null;
+
+    /**
+     * True once a RAR5 HEAD_CRYPT block has been parsed on the current volume (M3.4): every
+     * subsequent header is AES-256-CBC encrypted. Reset per volume in {@link #resetChannel}.
+     */
+    private boolean rar5HeadersEncrypted = false;
+
+    private MainHeader newMhd = null;
+
+    private Unpack unpack;
+
+    /** RAR5 (method 0x50) decode engine — one per archive, sibling of {@link #unpack} (M3.7). */
+    private Unpack5 unpack5;
+
+    private int currentHeaderIndex;
+
+    /**
+     * Headers this read could not use, in the order they were met. Without it a short
+     * {@link #getFileHeaders()} is indistinguishable from a complete one. Read through
+     * {@link #getHeaderFailures()} and {@link #hasBrokenHeaders()}.
+     */
+    private final List<BrokenHeader> headerFailures = new ArrayList<>();
+
+    /** RAR3 blocks read this pass, marker included; used to tell a marker-only file apart. */
+    private int rar3BlocksSeen;
+
+    /**
+     * Cap on the skipped headers kept in {@link #headerFailures}. How many there are is decided
+     * by the archive being read, so a crafted file of minimal blocks would otherwise let a
+     * caller's memory be sized by its attacker. Past this point a skipped header is still logged
+     * and still counted by {@link #hasBrokenHeaders()}; it is simply not accumulated. A terminal
+     * failure is exempt -- there is at most one per read, and it is the entry that separates
+     * losing one entry from losing every entry after it.
+     */
+    private static final int MAX_RECORDED_HEADER_FAILURES = 100;
+
+    /** Position for a failure that belongs to the read rather than to one identifiable block. */
+    private static final long UNATTRIBUTED_POSITION = -1L;
+
+    /**
+     * Tracks the highest file index processed in the current solid stream.
+     */
+    private int lastProcessedFileIndex = -1;
+
+    /**
+     * RAR 1.4 extraction-session ordinal (P2, issue #293; unrar {@code FileCount},
+     * {@code d861246:extract.cpp:773}, incremented for every entry -- stored or compressed,
+     * actually written or solid-skipped -- BEFORE its {@code Method==0} branch). RAR 1.4 has no
+     * per-file solid flag ({@link com.github.junrar.rarfile.FileHeader#isSolid()} is always
+     * false for a RAR14-container entry), unlike RAR3/RAR5's {@code hd.isSolid()} convention, so
+     * {@code doExtractFile}'s old-format branch derives the effective solid flag from this
+     * counter instead: the first entry extracted this session always gets {@code solid=false}
+     * (forcing a fresh {@code Unpack.init}); every entry after that gets the archive-level
+     * {@code MHD_SOLID} flag ({@code d861246:extract.cpp:920}: {@code FileCount>1 && Arc.Solid}).
+     * Not reset on volume switch -- RAR 1.4 multi-volume extraction is out of scope (P4).
+     */
+    private int oldFormatExtractedCount = 0;
+
+    /**
+     * Size of packed data in current file.
+     */
+    private long totalPackedSize = 0L;
+
+    /**
+     * Number of bytes of compressed data read from current file.
+     */
+    private long totalPackedRead = 0L;
+
+    private VolumeManager volumeManager;
+    private Volume volume;
+
+    private FileHeader nextFileHeader;
+    private char[] passwordChars;
+
+    /**
+     * Per-archive RAR4 key-derivation cache (unrar {@code CryptData::KDF3Cache}). Scoped here, not
+     * globally, so the password bytes and derived AES key die with {@link #close()} alongside
+     * {@link #passwordChars}.
+     */
+    private final Rijndael.Kdf3Cache rar4KdfCache = new Rijndael.Kdf3Cache();
+
+    private final long maxDictionarySize;
+
+    /**
+     * Canonical constructor: every other {@code Archive} constructor delegates here,
+     * directly or transitively. See {@link ArchiveOptions} for the password/resource
+     * configuration contract (password hygiene, {@code maxDictionarySize} budget).
+     *
+     * @param volumeManager supplies the first volume and, for a multi-volume set, each
+     *                      continuation as extraction crosses a volume boundary.
+     * @param options       the password/resource configuration; see {@link ArchiveOptions#builder()}.
+     * @throws RarException if the first volume is not a readable RAR archive (bad signature,
+     *                      corrupt or unsupported headers). The partially-opened archive is
+     *                      closed before this propagates.
+     * @throws IOException  if the first volume cannot be opened or read.
+     */
+    public Archive(final VolumeManager volumeManager, final ArchiveOptions options)
+            throws RarException, IOException {
+
+        this.volumeManager = volumeManager;
+        this.unrarCallback = options.getUnrarCallback();
+        this.passwordChars = options.getPassword();
+        this.maxDictionarySize = options.getMaxDictionarySize();
+
+        try {
+            setVolume(this.volumeManager.nextVolume(this, null));
+        } catch (IOException | RarException e) {
+            try {
+                close();
+            } catch (IOException e1) {
+                logger.error("Failed to close the archive after an internal error!");
+            }
+            throw e;
+        }
+        this.dataIO = new ComprDataIO(this);
+    }
+
+    /**
+     * @see #Archive(VolumeManager, ArchiveOptions)
+     * @see ArchiveOptions#builder()
+     */
+    public Archive(
+            final VolumeManager volumeManager,
+            final UnrarCallback unrarCallback,
+            final String password)
+            throws RarException, IOException {
+        this(
+                volumeManager,
+                ArchiveOptions.builder().unrarCallback(unrarCallback).password(password).build());
+    }
+
+    public Archive(final File firstVolume) throws RarException, IOException {
+        this(new FileVolumeManager(firstVolume), null, null);
+    }
+
+    public Archive(final File firstVolume, final UnrarCallback unrarCallback)
+            throws RarException, IOException {
+        this(new FileVolumeManager(firstVolume), unrarCallback, null);
+    }
+
+    /**
+     * A {@code String} password cannot be wiped from memory; prefer
+     * {@link #Archive(File, ArchiveOptions)} with a {@code char[]} password via
+     * {@link ArchiveOptions#builder()}.
+     */
+    public Archive(final File firstVolume, final String password) throws RarException, IOException {
+        this(new FileVolumeManager(firstVolume), null, password);
+    }
+
+    /**
+     * A {@code String} password cannot be wiped from memory; prefer {@link ArchiveOptions}
+     * (via {@link ArchiveOptions#builder()}) with a {@code char[]} password.
+     */
+    public Archive(final File firstVolume, final UnrarCallback unrarCallback, final String password)
+            throws RarException, IOException {
+        this(new FileVolumeManager(firstVolume), unrarCallback, password);
+    }
+
+    public Archive(final File firstVolume, final ArchiveOptions options)
+            throws RarException, IOException {
+        this(new FileVolumeManager(firstVolume), options);
+    }
+
+    public Archive(final InputStream rarAsStream) throws RarException, IOException {
+        this(new InputStreamVolumeManager(rarAsStream), null, null);
+    }
+
+    public Archive(final InputStream rarAsStream, final UnrarCallback unrarCallback)
+            throws RarException, IOException {
+        this(new InputStreamVolumeManager(rarAsStream), unrarCallback, null);
+    }
+
+    /**
+     * A {@code String} password cannot be wiped from memory; prefer
+     * {@link #Archive(InputStream, ArchiveOptions)} with a {@code char[]} password via
+     * {@link ArchiveOptions#builder()}.
+     */
+    public Archive(final InputStream rarAsStream, final String password)
+            throws IOException, RarException {
+        this(new InputStreamVolumeManager(rarAsStream), null, password);
+    }
+
+    /**
+     * A {@code String} password cannot be wiped from memory; prefer {@link ArchiveOptions}
+     * (via {@link ArchiveOptions#builder()}) with a {@code char[]} password.
+     */
+    public Archive(
+            final InputStream rarAsStream, final UnrarCallback unrarCallback, final String password)
+            throws IOException, RarException {
+        this(new InputStreamVolumeManager(rarAsStream), unrarCallback, password);
+    }
+
+    public Archive(final InputStream rarAsStream, final ArchiveOptions options)
+            throws IOException, RarException {
+        this(new InputStreamVolumeManager(rarAsStream), options);
+    }
+
+    private void setChannel(final SeekableReadOnlyByteChannel channel, final long length)
+            throws IOException, RarException {
+        this.totalPackedSize = 0L;
+        this.totalPackedRead = 0L;
+        resetChannel();
+        this.channel = channel;
+        try {
+            readHeaders(length);
+        } catch (UnsupportedRarEncryptedException
+                | UnsupportedRarVersionException
+                | CorruptHeaderException
+                | BadRarArchiveException
+                | WrongPasswordException e) {
+            logger.warn(
+                    "exception in archive constructor maybe file is encrypted, corrupt or support"
+                            + " not yet implemented",
+                    e);
+            throw e;
+        } catch (final Exception e) {
+            logger.warn(
+                    "exception in archive constructor maybe file is encrypted, corrupt or support"
+                            + " not yet implemented",
+                    e);
+            // ignore exceptions to allow extraction of working files in corrupt archive
+            //
+            // This catch is what made GHSA-h76x-7cgm-p442 exploitable rather than merely a
+            // crash: an unchecked bounds error out of header parsing landed here and the
+            // archive opened "successfully" with no headers and nothing to say so. Guarding
+            // the reads fixed the instances; recording the stop here covers whatever escapes
+            // next, including from parsing paths this change never touched.
+            recordHeaderFailure(UNATTRIBUTED_POSITION, null, 0, "header read failed: " + e, true);
+        }
+        // Calculate size of packed data
+        for (final BaseBlock block : this.headers) {
+            if (isFileEntry(block)) {
+                this.totalPackedSize += ((FileHeader) block).getFullPackSize();
+            }
+        }
+        if (this.unrarCallback != null) {
+            this.unrarCallback.volumeProgressChanged(this.totalPackedRead, this.totalPackedSize);
+        }
+    }
+
+    public void bytesReadRead(final int count) {
+        if (count > 0) {
+            this.totalPackedRead += count;
+            if (this.unrarCallback != null) {
+                this.unrarCallback.volumeProgressChanged(
+                        this.totalPackedRead, this.totalPackedSize);
+            }
+        }
+    }
+
+    public SeekableReadOnlyByteChannel getChannel() {
+        return this.channel;
+    }
+
+    /**
+     * Gets all of the headers in the archive.
+     *
+     * @return returns the headers.
+     */
+    public List<BaseBlock> getHeaders() {
+        return new ArrayList<>(this.headers);
+    }
+
+    /**
+     * @return returns all file headers of the archive
+     */
+    public List<FileHeader> getFileHeaders() {
+        final List<FileHeader> list = new ArrayList<>();
+        for (final BaseBlock block : this.headers) {
+            if (isFileEntry(block)) {
+                list.add((FileHeader) block);
+            }
+        }
+        return list;
+    }
+
+    /**
+     * Whether {@code block} is a listable file entry. A block whose body could not be parsed is
+     * not added to {@link #headers} at all (see {@link #skipBlock}), so the header-type byte
+     * still answers this on its own; the {@code instanceof} is kept as the guard that makes that
+     * invariant hold at the cast rather than by convention, since every site casting out of
+     * {@link #headers} relies on it.
+     *
+     * <p>{@code UnrarHeadertype.FileHeader.equals(block)} rather than the reverse (M3.3, issue
+     * #24): a RAR5 MAIN/CRYPT/ENDARC block's inherited RAR3 header-type byte is never set (those
+     * facts live on {@code Rar5MainHeader.getRar5Type()} instead), so {@code getHeaderType()} is
+     * null for them -- {@code null.equals(...)} would NPE.
+     */
+    private static boolean isFileEntry(final BaseBlock block) {
+        return block instanceof FileHeader
+                && UnrarHeadertype.FileHeader.equals(block.getHeaderType());
+    }
+
+    /**
+     * Every header this archive could not use, in the order they were met -- the detail behind
+     * {@link #hasBrokenHeaders()}. Each entry says where the header was, what it claimed to be,
+     * and why it was unusable, and whether it merely cost its own entry or ended the read (see
+     * {@link BrokenHeader#isTerminal()}). A failure that belongs to the read rather than to one
+     * identifiable block reports a position of {@code -1}.
+     *
+     * <p>Skipped headers are capped at {@value #MAX_RECORDED_HEADER_FAILURES}, because how many
+     * of them there are is chosen by the archive being read and an unbounded list would let a
+     * hostile one size a caller's memory. A terminal failure is recorded whatever the count, so
+     * the list holds at most {@value #MAX_RECORDED_HEADER_FAILURES} + 1. Skipped headers past
+     * the cap are still logged and still make {@link #hasBrokenHeaders()} true.
+     *
+     * <p>Scoped to the volume currently open, not to the whole archive. Reading a multi-volume
+     * archive re-enters the header read on each volume switch, which happens during extraction,
+     * and each read starts a fresh list -- so this reports the volume in hand at the moment it
+     * is called.
+     *
+     * @return an unmodifiable snapshot; never null.
+     */
+    public List<BrokenHeader> getHeaderFailures() {
+        return Collections.unmodifiableList(new ArrayList<>(this.headerFailures));
+    }
+
+    private void recordHeaderFailure(
+            final long position,
+            final UnrarHeadertype headerType,
+            final int declaredSize,
+            final String reason,
+            final boolean terminal) {
+        // A terminal failure is always kept. It is what separates losing one entry from losing
+        // every entry after it, and the cap is there to bound skipped headers, of which an
+        // archive can declare any number; a read has at most one stop.
+        if (terminal || this.headerFailures.size() < MAX_RECORDED_HEADER_FAILURES) {
+            this.headerFailures.add(
+                    new BrokenHeader(position, headerType, declaredSize, reason, terminal));
+        }
+    }
+
+    /**
+     * Whether anything about this archive's headers was found wrong -- the analogue of unrar's
+     * {@code BrokenHeader} flag, and the one call that answers "is this archive intact?".
+     * Upstream pairs that flag with {@code RARX_WARNING} for a RAR3 file-header CRC mismatch
+     * ({@code d861246:arcread.cpp:434-435}) and with {@code RARX_CRC} elsewhere ({@code :120-121},
+     * {@code :538-539}); this method does not distinguish them.
+     *
+     * <p>Two disjoint things make it true, and a caller needs both. A header that could not be
+     * used at all was skipped or ended the read, and is in {@link #getHeaderFailures()}. A header
+     * that was used but found wrong -- a CRC that did not match, or a field clamped to the bytes
+     * that were actually there -- is still listed, carries {@link BaseBlock#isBrokenHeader()},
+     * and is deliberately not a failure, because nothing was lost from
+     * {@link #getFileHeaders()} for it.
+     */
+    public boolean hasBrokenHeaders() {
+        return !this.headerFailures.isEmpty()
+                || this.headers.stream().anyMatch(BaseBlock::isBrokenHeader);
+    }
+
+    public FileHeader nextFileHeader() {
+        final int n = this.headers.size();
+        while (this.currentHeaderIndex < n) {
+            final BaseBlock block = this.headers.get(this.currentHeaderIndex++);
+            if (isFileEntry(block)) {
+                return (FileHeader) block;
+            }
+        }
+        return null;
+    }
+
+    public UnrarCallback getUnrarCallback() {
+        return this.unrarCallback;
+    }
+
+    /**
+     * @return whether the archive is encrypted
+     * @throws RarException when the main header is not present
+     */
+    public boolean isEncrypted() throws RarException {
+        if (this.format == RarFormat.RAR50) {
+            // RAR5 has no RAR3 MainHeader; header encryption is tracked by the HEAD_CRYPT block.
+            return this.rar5HeadersEncrypted;
+        }
+        if (this.newMhd != null) {
+            return this.newMhd.isEncrypted();
+        } else {
+            throw new MainHeaderNullException();
+        }
+    }
+
+    /**
+     * @return whether the archive content is password protected
+     * @throws RarException when the main header is not present
+     */
+    public boolean isPasswordProtected() throws RarException {
+        if (isEncrypted()) return true;
+        return getFileHeaders().stream().anyMatch(FileHeader::isEncrypted);
+    }
+
+    /**
+     * @return the detected {@link RarFormat} of the current volume, or {@code null} if the
+     *         archive has not been (successfully) opened.
+     */
+    public RarFormat getFormat() {
+        return this.format;
+    }
+
+    /**
+     * unrar {@code Archive::IsArchive}/{@code IsSignature} ({@code d861246:archive.cpp
+     * :100-190}): locate the RAR marker, tolerating an SFX stub of up to {@link #MAXSFXSIZE}
+     * bytes ahead of it, classify the format from the signature's version byte, and seek the
+     * channel to the marker so {@link #readHeaders} reads it next.
+     *
+     * @param fileLength the current volume's length (bounds the SFX scan).
+     * @return the detected {@link RarFormat}.
+     * @throws UnsupportedRarVersionException for a future RAR format junrar predates
+     *                                        (signature version byte {@code 2}..{@code 4}).
+     * @throws BadRarArchiveException         if no signature is found within the bound.
+     */
+    private RarFormat detectFormatAndSeek(final long fileLength) throws IOException, RarException {
+        // Fast path: signature at offset 0 (the common, non-SFX case). Avoids the 4 MB scan.
+        this.channel.setPosition(0);
+        final byte[] head = new byte[BaseBlock.BaseBlockSize];
+        final int headRead = fill(head, 0, head.length);
+        final int type0 = signatureType(head, 0, headRead);
+        if (type0 != SIG_NONE) {
+            this.channel.setPosition(0);
+            return toFormat(type0);
+        }
+
+        // SFX path: scan for the marker within the first MAXSFXSIZE bytes, starting at
+        // offset 1 (offset 0 was just ruled out). Bounded read/alloc -- a signature-free
+        // file reads at most MAXSFXSIZE bytes then fails (no unbounded scan).
+        final int scanLen = (int) Math.min(Math.max(fileLength - 1, 0), MAXSFXSIZE);
+        final byte[] buffer = new byte[scanLen];
+        this.channel.setPosition(1);
+        final int filled = fill(buffer, 0, scanLen);
+        for (int i = 0; i < filled; i++) {
+            if ((buffer[i] & 0xff) != 0x52) {
+                continue;
+            }
+            final int type = signatureType(buffer, i, filled - i);
+            if (type == SIG_NONE) {
+                continue;
+            }
+            if (type == SIG_RAR14 && !rsfxCorroborated(i, buffer, filled)) {
+                // unrar Archive::IsArchive (d861246:archive.cpp:160-166): a RAR 1.4 match
+                // past the RSFX-exempt first scanned byte needs corroboration, or a stub
+                // binary's arbitrary bytes can false-positive as the bare 4-byte 1.4 marker.
+                // unrar `continue`s the scan rather than failing outright -- there may be a
+                // real signature (of any format) further in.
+                continue;
+            }
+            this.channel.setPosition(1L + i);
+            return toFormat(type);
+        }
+        throw new BadRarArchiveException();
+    }
+
+    /**
+     * unrar's RSFX corroboration guard for an SFX-scanned RAR 1.4 match ({@code
+     * d861246:archive.cpp:165-166}: {@code Format==RARFMT14 && I>0 && CurPos<28 &&
+     * ReadSize>31}, then reject unless the 4 bytes at {@code Buffer[28-CurPos]} read {@code
+     * 52 53 46 58} ("RSFX")). {@code CurPos} (the scan buffer's absolute start offset) is
+     * always {@code 1} in this port ({@link #detectFormatAndSeek}'s SFX path always seeks
+     * there first), so {@code CurPos<28} is unconditionally true and only {@code I>0} /
+     * {@code ReadSize>31} are live guards here; {@code Buffer[28-CurPos]} is therefore always
+     * {@code buffer[27]} -- the fixed absolute file offset 28, independent of the match
+     * position {@code i}. A match at {@code i==0} (absolute file offset 1, immediately after
+     * the already-ruled-out offset 0) is exempt and always accepted, matching unrar exactly.
+     *
+     * @param i      the scan offset of the matched marker, relative to the scan buffer.
+     * @param buffer the scan buffer (absolute file offset 1 at index 0).
+     * @param filled the number of valid bytes in {@code buffer}.
+     * @return true if the match needs no corroboration ({@code i==0}) or the corroboration
+     *         bytes are present and equal to "RSFX".
+     */
+    private static boolean rsfxCorroborated(final int i, final byte[] buffer, final int filled) {
+        if (i == 0 || filled <= 31) {
+            return true;
+        }
+        return buffer[27] == 0x52 && buffer[28] == 0x53 && buffer[29] == 0x46 && buffer[30] == 0x58;
+    }
+
+    /**
+     * Reads up to {@code len} bytes into {@code buffer} at {@code offset}, looping until the
+     * request is satisfied or the channel is exhausted (a single {@code read} may return
+     * fewer bytes than asked).
+     *
+     * @return the number of bytes actually read.
+     */
+    private int fill(final byte[] buffer, final int offset, final int len) throws IOException {
+        int filled = 0;
+        while (filled < len) {
+            final int n = this.channel.read(buffer, offset + filled, len - filled);
+            if (n <= 0) {
+                break;
+            }
+            filled += n;
+        }
+        return filled;
+    }
+
+    private RarFormat toFormat(final int signatureType) throws UnsupportedRarVersionException {
+        switch (signatureType) {
+            case SIG_RAR50:
+                return RarFormat.RAR50;
+            case SIG_RAR14:
+                // Headers only (readHeaders14, P1, issue #293); extraction is a later phase.
+                // Parsing it as RAR15 would misread the 1.4 header bytes as a BaseBlock and
+                // surface a misleading CorruptHeaderException.
+                return RarFormat.RAR14;
+            case SIG_FUTURE:
+                throw new UnsupportedRarVersionException();
+            default:
+                return RarFormat.RAR15;
+        }
+    }
+
+    /**
+     * unrar {@code Archive::IsSignature} ({@code d861246:archive.cpp:100-126}): classify the
+     * bytes at {@code d[off..off+len)} as a RAR marker. Returns one of {@link #SIG_NONE},
+     * {@link #SIG_RAR14}, {@link #SIG_RAR15}, {@link #SIG_RAR50}, {@link #SIG_FUTURE}.
+     * {@code len} is the number of readable bytes from {@code off}, so short buffers never
+     * read past their content.
+     */
+    private static int signatureType(final byte[] d, final int off, final int len) {
+        if (len < 1 || (d[off] & 0xff) != 0x52) {
+            return SIG_NONE;
+        }
+        // Old RAR 1.4 marker: 52 45 7e 5e (unrar RARFMT14). NOT part of the RAR 1.5+ family:
+        // its headers predate the BaseBlock layout, so readHeaders14 (P1, issue #293) is a
+        // dedicated loop, not a dispatch through the RAR3 BaseBlock loop below.
+        if (len >= 4
+                && (d[off + 1] & 0xff) == 0x45
+                && (d[off + 2] & 0xff) == 0x7e
+                && (d[off + 3] & 0xff) == 0x5e) {
+            return SIG_RAR14;
+        }
+        // Modern marker: 52 61 72 21 1a 07 + version byte.
+        if (len >= 7
+                && (d[off + 1] & 0xff) == 0x61
+                && (d[off + 2] & 0xff) == 0x72
+                && (d[off + 3] & 0xff) == 0x21
+                && (d[off + 4] & 0xff) == 0x1a
+                && (d[off + 5] & 0xff) == 0x07) {
+            final int version = d[off + 6] & 0xff;
+            if (version == 0) {
+                return SIG_RAR15;
+            }
+            if (version == 1) {
+                return SIG_RAR50;
+            }
+            if (version > 1 && version < 5) {
+                return SIG_FUTURE;
+            }
+        }
+        return SIG_NONE;
+    }
+
+    /**
+     * Read the headers of the archive
+     *
+     * @param fileLength Length of file.
+     * @throws IOException, RarException
+     */
+    private void readHeaders(final long fileLength) throws IOException, RarException {
+        this.markHead = null;
+        this.newMhd = null;
+        this.headers.clear();
+        this.currentHeaderIndex = 0;
+        this.headerFailures.clear();
+        this.rar3BlocksSeen = 0;
+
+        // Locate the marker (skipping any SFX stub) and classify the format before the
+        // header loop; also seeks the channel to the marker.
+        this.format = detectFormatAndSeek(fileLength);
+
+        // RAR5 headers are vint-encoded and incompatible with the RAR3 BaseBlock loop below;
+        // dispatch to the dedicated RAR5 framework (M3.2, issue #23).
+        if (this.format == RarFormat.RAR50) {
+            readHeadersRar5(fileLength);
+            return;
+        }
+
+        // RAR 1.4 predates the BaseBlock layout entirely (P1, issue #293); dispatch to its own
+        // dedicated loop.
+        if (this.format == RarFormat.RAR14) {
+            readHeaders14(fileLength);
+            return;
+        }
+
+        try {
+            readHeaders3(fileLength);
+        } catch (CorruptHeaderException | BadRarArchiveException e) {
+            // Enumeration stops here and keeps whatever it read, as unrar's Archive::ReadHeader
+            // does when it returns 0. It does not rethrow, and it does not make a case of having
+            // read nothing: an archive whose every header is unusable is the same event as one
+            // with a single unusable header, and an empty list is that event's consequence
+            // rather than a separate failure to report. What tells a caller is what tells them
+            // in every other degree of the same damage -- getHeaderFailures(), hasBrokenHeaders()
+            // and the warning each skipped header logs.
+            recordHeaderFailure(UNATTRIBUTED_POSITION, null, 0, String.valueOf(e), true);
+            // One thing here is not damage to skip past. When an encrypted header's CRC fails,
+            // unrar sets FailedHeaderDecryption and refuses to read another header for the rest
+            // of the archive (d861246:arcread.cpp, ReadHeader15): the password is wrong or the
+            // bytes are not headers, so every block after this one would be parsed out of
+            // wrongly-decrypted plaintext. That is an unusable key rather than a bad header, and
+            // junrar matches it deliberately (P0.7, issue #12).
+            if (this.newMhd != null && this.newMhd.isEncrypted()) {
+                throw e;
+            }
+            logger.warn(
+                    "Stopped reading RAR3 headers at a corrupt block; keeping the {} entries"
+                            + " already read",
+                    getFileHeaders().size(),
+                    e);
+        }
+        // The main archive header is the archive's own record -- volume, solid, locked,
+        // encrypted -- and every RAR format carries one. This reader answers "are the headers
+        // encrypted?" from it, so without one there is nothing to answer with, and every block
+        // read after this point would be read on a guess. A file holding nothing but a marker is
+        // not this case: it declares no blocks to describe, and it opens today.
+        if (this.newMhd == null && this.rar3BlocksSeen > 1) {
+            throw new CorruptHeaderException(
+                    "Archive declares blocks but no readable main archive header, so nothing"
+                            + " describes the archive itself");
+        }
+    }
+
+    /**
+     * RAR3 header-read loop (unrar {@code Archive::ReadHeader15}). A RAR3 header declares its own
+     * size, so enumeration can always advance past one whose body it cannot parse: unrar fixes
+     * {@code NextBlockPos} from that declared size before reading a single field, and treats a
+     * field-level problem as a warning rather than a stop.
+     *
+     * <p>junrar reaches the headers behind a broken one the same way, but not by the same
+     * mechanism. unrar's {@code RawRead::Get*} returns zero past the end of its buffer and {@code
+     * GetB} zero-fills a short copy, so a header too short for its own mandatory fields is listed
+     * upstream as a wholly invented entry -- size 0, CRC 0, 1980 mtime, empty name -- flagged only
+     * as a side effect of the CRC then mismatching. {@code MIGRATION_MANUAL.md} §4.7 forbids
+     * replicating that zero-fill, and this loop extends the rule from how bytes are read to what is
+     * published: a header that cannot be parsed soundly is {@linkplain #skipBlock
+     * skipped} and recorded in {@link #getHeaderFailures()}, never reaching {@link
+     * #getFileHeaders()} carrying a value that was never on the wire.
+     */
+    private void readHeaders3(final long fileLength) throws IOException, RarException {
+        int toRead = 0;
+
+        // keep track of positions already processed for
+        // more robustness against corrupt files
+        final Set<Long> processedPositions = new HashSet<>();
+        while (true) {
+            int size = 0;
+            long newpos = 0;
+            RawDataIo rawData = new RawDataIo(channel);
+            final byte[] baseBlockBuffer = safelyAllocate(BaseBlock.BaseBlockSize, MAX_HEADER_SIZE);
+
+            // if header is encrypted,there is a 8-byte salt before each header
+            if (newMhd != null && newMhd.isEncrypted()) {
+                byte[] salt = new byte[8];
+                rawData.readFully(salt, 8);
+                try {
+                    Cipher cipher = this.rar4KdfCache.buildDecipherer(passwordAsString(), salt);
+                    rawData.setCipher(cipher);
+                } catch (Exception e) {
+                    throw new InitDeciphererFailedException(e);
+                }
+            }
+
+            final long position = this.channel.getPosition();
+
+            // Weird, but is trying to read beyond the end of the file
+            if (position >= fileLength) {
+                break;
+            }
+
+            // logger.info("\n--------reading header--------");
+            size = rawData.readFully(baseBlockBuffer, baseBlockBuffer.length);
+
+            if (size == 0) {
+                break;
+            }
+            this.rar3BlocksSeen++;
+            final BaseBlock block = new BaseBlock(baseBlockBuffer);
+
+            block.setPositionInFile(position);
+
+            UnrarHeadertype headerType = block.getHeaderType();
+            if (headerType == null) {
+                // An unrecognised type is not a stop, only an unreadable one is; unrar's
+                // default: arm likewise advances and keeps going, and further than this does:
+                // for a LONG_BLOCK it reads a 4-byte data size out of the header it has already
+                // buffered and adds that value, clearing the block's payload as well
+                // (d861246:arcread.cpp:503-507). This clears only the header.
+                // Landing there costs extra recorded failures, not correctness -- those bytes
+                // are parsed as blocks and skipped -- and reading that size would mean trusting
+                // a length out of a block whose type we do not know.
+                skipBlock(block, "unknown block type");
+                // Not isEncrypted(): an unknown block can be the first one after the marker, and
+                // that throws MainHeaderNullException before any main header has been read. The
+                // block was read as plaintext either way, so this is the size to advance by.
+                advanceTo(
+                        position + block.getHeaderSize(headersAreEncrypted()),
+                        position,
+                        processedPositions);
+                continue;
+            }
+            switch (headerType) {
+                case MarkHeader:
+                    this.markHead = new MarkHeader(block);
+                    if (!this.markHead.isSignature()) {
+                        // A RAR5 marker can never reach this RAR3 loop (readHeaders dispatches
+                        // RAR50 to readHeadersRar5 first), so any non-signature block here is
+                        // simply a bad archive.
+                        throw new BadRarArchiveException();
+                    }
+                    if (!markHead.isValid()) {
+                        throw new CorruptHeaderException("Invalid Mark Header");
+                    }
+                    this.headers.add(this.markHead);
+                    // markHead.print();
+                    break;
+
+                case MainHeader:
+                    toRead =
+                            block.hasEncryptVersion()
+                                    ? MainHeader.mainHeaderSizeWithEnc
+                                    : MainHeader.mainHeaderSize;
+                    final byte[] mainbuff = safelyAllocate(toRead, MAX_HEADER_SIZE);
+                    rawData.readFully(mainbuff, mainbuff.length);
+                    final MainHeader mainhead = new MainHeader(block, mainbuff);
+                    verifyHeaderCrc(mainhead, fileLength, baseBlockBuffer, mainbuff);
+                    this.headers.add(mainhead);
+                    this.newMhd = mainhead;
+                    break;
+
+                case SignHeader:
+                    // Upstream-exempt (HEAD3_SIGN): no header-CRC verification at all.
+                    toRead = SignHeader.signHeaderSize;
+                    final byte[] signBuff = safelyAllocate(toRead, MAX_HEADER_SIZE);
+                    rawData.readFully(signBuff, signBuff.length);
+                    final SignHeader signHead = new SignHeader(block, signBuff);
+                    this.headers.add(signHead);
+                    break;
+
+                case AvHeader:
+                    // Upstream-exempt (HEAD3_AV): "Old AV header does not have header
+                    // CRC properly set" (d861246:arcread.cpp:514-523).
+                    toRead = AVHeader.avHeaderSize;
+                    final byte[] avBuff = safelyAllocate(toRead, MAX_HEADER_SIZE);
+                    rawData.readFully(avBuff, avBuff.length);
+                    final AVHeader avHead = new AVHeader(block, avBuff);
+                    this.headers.add(avHead);
+                    break;
+
+                case CommHeader:
+                    toRead = CommentHeader.commentHeaderSize;
+                    final byte[] commBuff = safelyAllocate(toRead, MAX_HEADER_SIZE);
+                    rawData.readFully(commBuff, commBuff.length);
+                    final CommentHeader commHead = new CommentHeader(block, commBuff);
+                    verifyHeaderCrc(commHead, fileLength, baseBlockBuffer, commBuff);
+                    this.headers.add(commHead);
+
+                    newpos =
+                            commHead.getPositionInFile()
+                                    + commHead.getHeaderSize(headersAreEncrypted());
+                    advanceTo(newpos, position, processedPositions);
+
+                    break;
+                case EndArcHeader:
+                    toRead = 0;
+                    if (block.hasArchiveDataCRC()) {
+                        toRead += EndArcHeader.endArcArchiveDataCrcSize;
+                    }
+                    if (block.hasVolumeNumber()) {
+                        toRead += EndArcHeader.endArcVolumeNumberSize;
+                    }
+                    EndArcHeader endArcHead;
+                    final byte[] endArchBuff;
+                    if (toRead > 0) {
+                        endArchBuff = safelyAllocate(toRead, MAX_HEADER_SIZE);
+                        rawData.readFully(endArchBuff, endArchBuff.length);
+                        endArcHead = new EndArcHeader(block, endArchBuff);
+                    } else {
+                        endArchBuff = new byte[0];
+                        endArcHead = new EndArcHeader(block, null);
+                    }
+                    if ((this.newMhd == null || !this.newMhd.isMultiVolume())
+                            && !endArcHead.isValid()) {
+                        throw new CorruptHeaderException("Invalid End Archive Header");
+                    }
+                    verifyHeaderCrc(endArcHead, fileLength, baseBlockBuffer, endArchBuff);
+                    this.headers.add(endArcHead);
+                    return;
+
+                default:
+                    final byte[] blockHeaderBuffer =
+                            safelyAllocate(BlockHeader.blockHeaderSize, MAX_HEADER_SIZE);
+                    rawData.readFully(blockHeaderBuffer, blockHeaderBuffer.length);
+                    final BlockHeader blockHead = new BlockHeader(block, blockHeaderBuffer);
+
+                    switch (blockHead.getHeaderType()) {
+                        case NewSubHeader:
+                        case FileHeader:
+                            toRead =
+                                    blockHead.getHeaderSize(false)
+                                            - BlockHeader.BaseBlockSize
+                                            - BlockHeader.blockHeaderSize;
+                            // The archive can end inside the body. unrar reads whatever is
+                            // there and parses on, so size the buffer to the bytes that exist
+                            // and let the header's own bounds checks decide what that leaves.
+                            toRead =
+                                    (int)
+                                            Math.max(
+                                                    0,
+                                                    Math.min(
+                                                            toRead,
+                                                            fileLength
+                                                                    - this.channel.getPosition()
+                                                                    + rawData.bufferedBytes()));
+                            final byte[] fileHeaderBuffer = safelyAllocate(toRead, MAX_HEADER_SIZE);
+                            try {
+                                rawData.readFully(fileHeaderBuffer, fileHeaderBuffer.length);
+                            } catch (EOFException e) {
+                                throw new CorruptHeaderException("Unexpected end of file");
+                            }
+
+                            final FileHeader fh;
+                            try {
+                                fh = new FileHeader(blockHead, fileHeaderBuffer);
+                            } catch (CorruptHeaderException e) {
+                                // A mandatory field the body does not hold. Keep the block that
+                                // framed it -- its own bytes were all present -- rather than a
+                                // file entry whose name or size nothing on the wire supplied.
+                                skipBlock(blockHead, e.getMessage());
+                                advanceTo(
+                                        blockHead.getPositionInFile()
+                                                + blockHead.getHeaderSize(headersAreEncrypted())
+                                                + blockHead.getPackSize(),
+                                        position,
+                                        processedPositions);
+                                break;
+                            }
+                            if (fh.isFileHeader() && fh.hasComment()) {
+                                // unrar runs the FILE/SERVICE header through TWO CRC checks
+                                // (issue #38 item 2, P0.7 Finding A). First, the inline
+                                // CRCProcessedOnly check (d861246:arcread.cpp:268,430-445):
+                                // an old-style embedded comment (LHD_COMMENT) leaves unparsed
+                                // trailing bytes past getParsedLength() -- cover only the
+                                // processed prefix here.
+                                final int narrowCoverage =
+                                        BaseBlock.BaseBlockSize
+                                                + BlockHeader.blockHeaderSize
+                                                + fh.getParsedLength();
+                                verifyHeaderCrc(
+                                        fh,
+                                        fileLength,
+                                        narrowCoverage,
+                                        baseBlockBuffer,
+                                        blockHeaderBuffer,
+                                        fileHeaderBuffer);
+                                // Second, the generic check unconditionally re-run after the
+                                // switch (:514-522), which does NOT exempt FILE/SERVICE and
+                                // always covers the full header buffer -- this is what
+                                // actually catches corruption in the comment tail the narrow
+                                // check above skips.
+                                verifyHeaderCrc(
+                                        fh,
+                                        fileLength,
+                                        baseBlockBuffer,
+                                        blockHeaderBuffer,
+                                        fileHeaderBuffer);
+                            } else {
+                                // No comment (the corpus-observed case, and NEWSUB_HEAD --
+                                // which always consumes its whole buffer as subData): the two
+                                // upstream checks degenerate to the same full-buffer
+                                // computation, so one call covers both.
+                                verifyHeaderCrc(
+                                        fh,
+                                        fileLength,
+                                        baseBlockBuffer,
+                                        blockHeaderBuffer,
+                                        fileHeaderBuffer);
+                            }
+                            this.headers.add(fh);
+                            newpos =
+                                    fh.getPositionInFile()
+                                            + fh.getHeaderSize(headersAreEncrypted())
+                                            + fh.getFullPackSize();
+                            advanceTo(newpos, position, processedPositions);
+                            break;
+
+                        case ProtectHeader:
+                            toRead =
+                                    blockHead.getHeaderSize(false)
+                                            - BlockHeader.BaseBlockSize
+                                            - BlockHeader.blockHeaderSize;
+                            // The archive can end inside the body, and a stream-backed read pads
+                            // a short read with zeroes rather than failing -- so without this
+                            // the header would parse from bytes the file never held. Size the
+                            // buffer to what exists and let the rejection above handle the rest,
+                            // as the file-header arm does.
+                            toRead =
+                                    (int)
+                                            Math.max(
+                                                    0,
+                                                    Math.min(
+                                                            toRead,
+                                                            fileLength
+                                                                    - this.channel.getPosition()
+                                                                    + rawData.bufferedBytes()));
+                            final byte[] protectHeaderBuffer =
+                                    safelyAllocate(toRead, MAX_HEADER_SIZE);
+                            rawData.readFully(protectHeaderBuffer, protectHeaderBuffer.length);
+                            final ProtectHeader ph;
+                            try {
+                                ph = new ProtectHeader(blockHead, protectHeaderBuffer);
+                            } catch (CorruptHeaderException e) {
+                                // Too short to hold its fixed layout: skipped like any other
+                                // header that cannot be parsed, rather than listed with fields
+                                // nothing on the wire supplied.
+                                skipBlock(blockHead, e.getMessage());
+                                // Past the payload as well as the header -- no-go row C7
+                                // (8e91d695), "the + dataSize is the fix". The length is in the
+                                // block header ahead of the body, which parsed, so it is known
+                                // here even though the ProtectHeader is not; landing inside the
+                                // recovery data would have the parser read it as blocks.
+                                advanceTo(
+                                        blockHead.getPositionInFile()
+                                                + blockHead.getHeaderSize(headersAreEncrypted())
+                                                + blockHead.getDataSize(),
+                                        position,
+                                        processedPositions);
+                                break;
+                            }
+                            verifyHeaderCrc(
+                                    ph,
+                                    fileLength,
+                                    baseBlockBuffer,
+                                    blockHeaderBuffer,
+                                    protectHeaderBuffer);
+                            // Listed like the other headers this reader parses but does not
+                            // consume -- SIGN, AV, MAC, EA and the Unix owners sub-block are all
+                            // kept the same way. Listing it always, rather than only when it is
+                            // broken, is what makes a broken one visible through the ordinary
+                            // channel: getHeaders() carries the flag verifyHeaderCrc sets, and
+                            // hasBrokenHeaders() reads it from there.
+                            //
+                            // unrar flags this block too when its CRC does not match --
+                            // HEAD3_PROTECT is on no exemption list, so the generic check sets
+                            // BrokenHeader and RARX_CRC. What upstream cannot see is a body too
+                            // short for the layout: RawRead zero-fills the missing fields and
+                            // the CRC over the bytes present still matches, so `unrar t` reports
+                            // All OK. Nor could it report one if it wanted to: ProtectHead is
+                            // write-only there (only DataSize is read, to advance), its "data
+                            // recovery header is corrupt" string is defined and never emitted,
+                            // and its DLL surfaces no non-file header at all.
+                            this.headers.add(ph);
+                            newpos =
+                                    ph.getPositionInFile()
+                                            + ph.getHeaderSize(headersAreEncrypted())
+                                            + ph.getDataSize();
+                            advanceTo(newpos, position, processedPositions);
+                            break;
+
+                        case SubHeader:
+                            {
+                                final byte[] subHeadbuffer =
+                                        safelyAllocate(
+                                                SubBlockHeader.SubBlockHeaderSize, MAX_HEADER_SIZE);
+                                rawData.readFully(subHeadbuffer, subHeadbuffer.length);
+                                final SubBlockHeader subHead =
+                                        new SubBlockHeader(blockHead, subHeadbuffer);
+                                subHead.print();
+                                SubBlockHeaderType subType = subHead.getSubType();
+                                if (subType == null) break;
+                                switch (subType) {
+                                    case MAC_HEAD:
+                                        {
+                                            final byte[] macHeaderbuffer =
+                                                    safelyAllocate(
+                                                            MacInfoHeader.MacInfoHeaderSize,
+                                                            MAX_HEADER_SIZE);
+                                            rawData.readFully(
+                                                    macHeaderbuffer, macHeaderbuffer.length);
+                                            final MacInfoHeader macHeader =
+                                                    new MacInfoHeader(subHead, macHeaderbuffer);
+                                            macHeader.print();
+                                            verifyHeaderCrc(
+                                                    macHeader,
+                                                    fileLength,
+                                                    baseBlockBuffer,
+                                                    blockHeaderBuffer,
+                                                    subHeadbuffer,
+                                                    macHeaderbuffer);
+                                            this.headers.add(macHeader);
+
+                                            break;
+                                        }
+                                    // TODO implement other subheaders
+                                    case BEEA_HEAD:
+                                        // Not parsed (junrar never reads BEEA_HEAD's payload,
+                                        // unlike unrar) -- no CRC check: our read stops short
+                                        // of unrar's true coverage, so a partial-buffer check
+                                        // would false-positive against a real archive.
+                                        break;
+                                    case EA_HEAD:
+                                        {
+                                            final byte[] eaHeaderBuffer =
+                                                    safelyAllocate(
+                                                            EAHeader.EAHeaderSize, MAX_HEADER_SIZE);
+                                            rawData.readFully(
+                                                    eaHeaderBuffer, eaHeaderBuffer.length);
+                                            final EAHeader eaHeader =
+                                                    new EAHeader(subHead, eaHeaderBuffer);
+                                            eaHeader.print();
+                                            verifyHeaderCrc(
+                                                    eaHeader,
+                                                    fileLength,
+                                                    baseBlockBuffer,
+                                                    blockHeaderBuffer,
+                                                    subHeadbuffer,
+                                                    eaHeaderBuffer);
+                                            this.headers.add(eaHeader);
+
+                                            break;
+                                        }
+                                    case NTACL_HEAD:
+                                        // Same rationale as BEEA_HEAD: not parsed here.
+                                        break;
+                                    case STREAM_HEAD:
+                                        // Same rationale as BEEA_HEAD: not parsed here.
+                                        break;
+                                    case UO_HEAD:
+                                        // Upstream-exempt (HEAD3_OLDSERVICE + UO_HEAD): "Old
+                                        // Unix owners header didn't include string fields into
+                                        // header size, but included them into CRC, so it
+                                        // couldn't be verified with generic approach here"
+                                        // (d861246:arcread.cpp:514-523).
+                                        toRead = subHead.getHeaderSize(false);
+                                        toRead -= BaseBlock.BaseBlockSize;
+                                        toRead -= BlockHeader.blockHeaderSize;
+                                        toRead -= SubBlockHeader.SubBlockHeaderSize;
+                                        final byte[] uoHeaderBuffer =
+                                                safelyAllocate(toRead, MAX_HEADER_SIZE);
+                                        rawData.readFully(uoHeaderBuffer, uoHeaderBuffer.length);
+                                        final UnixOwnersHeader uoHeader =
+                                                new UnixOwnersHeader(subHead, uoHeaderBuffer);
+                                        uoHeader.print();
+                                        this.headers.add(uoHeader);
+                                        break;
+                                    default:
+                                        break;
+                                }
+
+                                // Always seek past the full subblock (header + packed data) so that
+                                // partially-handled subtypes (e.g. MAC_HEAD, EA_HEAD) don't leave
+                                // the
+                                // channel positioned mid-block, corrupting all subsequent header
+                                // reads.
+                                newpos =
+                                        subHead.getPositionInFile()
+                                                + subHead.getHeaderSize(headersAreEncrypted())
+                                                + subHead.getDataSize();
+                                advanceTo(newpos, position, processedPositions);
+
+                                break;
+                            }
+                        default:
+                            logger.warn("Unknown Header");
+                            throw new NotRarArchiveException();
+                    }
+            }
+            // logger.info("\n--------end header--------");
+        }
+    }
+
+    /**
+     * Whether RAR3 headers are encrypted, answering {@code false} when no main header has been
+     * read yet. Not {@link #isEncrypted()}: that throws {@link MainHeaderNullException} in
+     * exactly that case, and every block before the main header would advance by calling it --
+     * a checked exception of a type neither caught below nor rethrown by {@link #setChannel},
+     * so it would be swallowed and the archive would open reporting nothing. The block was read
+     * as plaintext either way, so this is the size to advance by.
+     */
+    private boolean headersAreEncrypted() {
+        return this.newMhd != null && this.newMhd.isEncrypted();
+    }
+
+    /**
+     * Records a RAR3 block whose body could not be parsed soundly and leaves it out of
+     * {@link #headers}. The block itself came off the wire whole -- its type, flags and declared
+     * size sit in a fixed prefix -- but nothing behind it can be trusted, so it is reported
+     * through {@link #getHeaderFailures()} rather than published as a header. Keeping it out is
+     * what preserves the invariant that a block in {@link #headers} carrying the FILE type byte
+     * is a {@link FileHeader}, and what keeps an entry with no name of its own away from
+     * extraction, where {@code new File(destDir, "")} resolves to the destination directory.
+     */
+    private void skipBlock(final BaseBlock block, final String reason) {
+        recordHeaderFailure(
+                block.getPositionInFile(),
+                block.getHeaderType(),
+                block.getHeaderSize(false),
+                reason,
+                false);
+        logger.warn(
+                "Unparseable {} header of declared size {} at position {} ({}); skipping to the"
+                        + " next block",
+                block.getHeaderType(),
+                block.getHeaderSize(false),
+                block.getPositionInFile(),
+                reason);
+    }
+
+    /**
+     * Moves to the next RAR3 block, refusing an advance that does not move forward. unrar stops on
+     * {@code NextBlockPos <= CurBlockPos} ({@code Archive::ReadHeader}); the caller in {@link
+     * #readHeaders} turns that into a stop which keeps the headers already read.
+     *
+     * <p>The already-read check is belt-and-braces and is not independently reachable today: the
+     * only positions ever registered are previous {@code newpos} values, each of which had to
+     * exceed the position it was reached from, and the read position never decreases -- so the
+     * largest registered value is always at most the current {@code position}, and a {@code
+     * newpos} that clears the forward-progress test cannot collide with one. It is kept because
+     * that argument is a property of the current call sites rather than of the format, and a
+     * block type added later that advanced differently would need it. Mutation testing confirms
+     * it: removing this half leaves the whole suite and the regression corpus green, while
+     * removing the forward-progress half is caught by {@code
+     * ArchiveCorruptRecoveryTest.aBlockThatWouldNotMoveForwardIsRefusedRatherThanReRead}.
+     */
+    private void advanceTo(
+            final long newpos, final long position, final Set<Long> processedPositions)
+            throws IOException, BadRarArchiveException {
+        if (newpos <= position || !processedPositions.add(newpos)) {
+            throw new BadRarArchiveException();
+        }
+        this.channel.setPosition(newpos);
+    }
+
+    /**
+     * RAR 1.4 header-read loop (P1, issue #293; unrar {@code Archive::ReadHeader14},
+     * {@code d861246:arcread.cpp:1256-1331}). The RAR 1.4 wire format predates the RAR15+
+     * {@code BaseBlock} layout entirely: a bare 4-byte marker, a 3-byte main header ({@code
+     * HeadSize} u16 + {@code Flags} u8), then one {@link Rar14HeaderReader#SIZEOF_FILEHEAD14}
+     * file header per entry, its OEM name bytes, and packed data -- inline, no {@code
+     * BaseBlock}, no header CRC. Extraction of these entries is a later phase (P1 brief
+     * non-goals); this loop only lists them through the unified {@link FileHeader}.
+     */
+    private void readHeaders14(final long fileLength) throws IOException, RarException {
+        // detectFormatAndSeek left the channel at the marker (offset 0, or the SFX offset).
+        final long markerPos = this.channel.getPosition();
+
+        final byte[] mainBuf = new byte[SIZEOF_MAINHEAD14];
+        if (fill(mainBuf, 0, SIZEOF_MAINHEAD14) < SIZEOF_MAINHEAD14) {
+            throw new CorruptHeaderException("Truncated RAR 1.4 main header");
+        }
+        if (signatureType(mainBuf, 0, 4) != SIG_RAR14) {
+            throw new CorruptHeaderException("Invalid RAR 1.4 marker");
+        }
+        final int mainHeadSize = Raw.readShortLittleEndian(mainBuf, 4) & 0xffff;
+        // unrar: if (HeadSize<7) return 0 -- a broken header (arcread.cpp:1266).
+        if (mainHeadSize < SIZEOF_MAINHEAD14) {
+            throw new CorruptHeaderException("RAR 1.4 main header too small");
+        }
+        final int mainFlags = mainBuf[6] & 0xff;
+
+        // Synthesize a MainHeader so isEncrypted()/isPasswordProtected() (this.newMhd == null
+        // would otherwise throw MainHeaderNullException) and FileVolumeManager's `mainHeader
+        // != null` old-naming test both see one, same as every RAR3 archive. unrar's
+        // ReadHeader14 interprets exactly 4 bits of this Flags byte -- MHD_VOLUME, MHD_SOLID,
+        // MHD_LOCK, MHD_COMMENT (d861246:arcread.cpp:1274-1278; MHD_PACK_COMMENT/0x10 feeds
+        // MainHead.PackComment there too, but junrar's MainHeader has no accessor for it) --
+        // so mask down to exactly those before constructing the synthetic header, dropping
+        // every other bit including 0x80 (MHD_PASSWORD in the RAR15+ vocabulary: RAR 1.4 has
+        // no main-header encryption concept at all, only per-file LHD_PASSWORD, so a stray
+        // 0x80 must never reach MainHeader.isEncrypted()) and 0x10 (which would otherwise
+        // read back as MHD_NEWNUMBERING on a real RAR15+ main header and could defeat
+        // FileVolumeManager's `!mainHeader.isNewNumbering() || archive.isOldFormat()`
+        // old-naming test for a 1.4 volume archive that happens to carry a packed comment --
+        // isOldFormat() alone already forces old naming; this just keeps both terms honest).
+        final int interpretedMainFlags =
+                mainFlags
+                        & (BaseBlock.MHD_VOLUME
+                                | BaseBlock.MHD_COMMENT
+                                | BaseBlock.MHD_LOCK
+                                | BaseBlock.MHD_SOLID);
+        final byte[] baseBlockBuf = new byte[BaseBlock.BaseBlockSize];
+        baseBlockBuf[2] = UnrarHeadertype.MainHeader.getHeaderByte();
+        Raw.writeShortLittleEndian(baseBlockBuf, 3, (short) interpretedMainFlags);
+        final BaseBlock mainBase = new BaseBlock(baseBlockBuf);
+        this.newMhd = new MainHeader(mainBase, new byte[MainHeader.mainHeaderSize]);
+
+        this.markHead = MarkHeader.old();
+        this.headers.add(this.markHead);
+
+        long position = markerPos + mainHeadSize;
+        if (position <= markerPos) {
+            throw new CorruptHeaderException("RAR 1.4 main header does not advance");
+        }
+        this.channel.setPosition(position);
+
+        final Set<Long> processedPositions = new HashSet<>();
+        while (true) {
+            if (position >= fileLength) {
+                break;
+            }
+
+            final byte[] fixed = new byte[Rar14HeaderReader.SIZEOF_FILEHEAD14];
+            final int gotFixed = fill(fixed, 0, fixed.length);
+            if (gotFixed == 0) {
+                break;
+            }
+            if (gotFixed < fixed.length) {
+                throw new CorruptHeaderException("Truncated RAR 1.4 file header");
+            }
+
+            final int nameSize = fixed[19] & 0xff;
+            final byte[] nameBytes = new byte[nameSize];
+            if (nameSize > 0 && fill(nameBytes, 0, nameSize) < nameSize) {
+                throw new CorruptHeaderException("Truncated RAR 1.4 file name");
+            }
+
+            final FileHeader fh = Rar14HeaderReader.read(fixed, nameBytes);
+            fh.setPositionInFile(position);
+            this.headers.add(fh);
+
+            final long headSize = Raw.readShortLittleEndian(fixed, 10) & 0xffffL;
+            final long packSize = Raw.readIntLittleEndianAsLong(fixed, 0);
+            final long nextPos = position + headSize + packSize;
+            // unrar's final check, ported directly: NextBlockPos>CurBlockPos ? ... : 0 (a
+            // broken header). headSize is already floor-validated to SIZEOF_FILEHEAD14 (21)
+            // above and packSize is an unsigned 32-bit read (never negative), so this cannot
+            // currently trip for a fixed-width RAR 1.4 header -- kept as defense in depth,
+            // matching the identical guard in readHeadersRar5, whose vint DataSize CAN encode
+            // a value that defeats a floor check the way RAR 1.4's fixed fields cannot.
+            if (nextPos <= position) {
+                throw new CorruptHeaderException("RAR 1.4 file header does not advance");
+            }
+            this.channel.setPosition(nextPos);
+            if (processedPositions.contains(nextPos)) {
+                throw new BadRarArchiveException();
+            }
+            processedPositions.add(nextPos);
+            position = nextPos;
+        }
+    }
+
+    /**
+     * RAR5 header-read loop (M3.2, issue #23; unrar {@code ReadHeader50},
+     * {@code 8f437ab:arcread.cpp:555-...}, boundary + CRC at {@code d861246:arcread.cpp
+     * :634-707}). Consumes the 8-byte RAR5 marker, then eagerly parses each block
+     * ({@code CRC32 | vint HeadSize | vint Type | vint Flags [| vint ExtraSize][| vint
+     * DataSize]}) into the shared {@code headers} list, seeking past each block's packed
+     * data and guarding against a repeated stream position (S1/C6 parity, no-go S1). Stops
+     * at the end-of-archive block, exactly as the RAR3 loop's {@code EndArcHeader} case
+     * terminates.
+     * <p>
+     * The buffer for each block is capped at {@link Rar5BaseBlock#MAX_HEADER_SIZE_RAR5} (not
+     * the generic {@link #MAX_HEADER_SIZE}); the 2 MB / 3-byte-size-vint bound is enforced by
+     * {@link Rar5BaseBlock#checkHeaderSize} <em>before</em> that allocation.
+     * <p>
+     * The M3.2-M3.10 V5 extraction gate (a dedicated exception thrown here before any parsing)
+     * was lifted at M3.11 (issue #32): RAR5 archives parse and extract on every public path.
+     * That exception type was removed outright for the 8.0 major (PR #289 review).
+     */
+    private void readHeadersRar5(final long fileLength) throws IOException, RarException {
+        // detectFormatAndSeek left the channel at the marker; consume and re-validate it.
+        final byte[] marker = new byte[SIZEOF_MARKHEAD5];
+        if (fill(marker, 0, SIZEOF_MARKHEAD5) < SIZEOF_MARKHEAD5
+                || signatureType(marker, 0, SIZEOF_MARKHEAD5) != SIG_RAR50) {
+            throw new CorruptHeaderException("Invalid RAR5 marker");
+        }
+
+        final Set<Long> processedPositions = new HashSet<>();
+        // Non-null once a HEAD_CRYPT block is parsed: every subsequent header is then AES-256-CBC
+        // encrypted with its own prepended 16-byte IV (unrar arcread.cpp:559-631).
+        Rar5HeaderCrypt crypto = null;
+        while (true) {
+            final long position = this.channel.getPosition();
+            if (position >= fileLength) {
+                break;
+            }
+
+            final boolean encrypted = crypto != null;
+            final byte[] headerBuffer;
+            if (encrypted) {
+                headerBuffer = readEncryptedRar5Header(crypto);
+                if (headerBuffer == null) {
+                    break;
+                }
+            } else {
+                final byte[] first = new byte[Rar5BaseBlock.FIRST_READ_SIZE];
+                final int got = fill(first, 0, Rar5BaseBlock.FIRST_READ_SIZE);
+                if (got == 0) {
+                    break;
+                }
+                if (got < Rar5BaseBlock.FIRST_READ_SIZE) {
+                    throw new CorruptHeaderException("Truncated RAR5 block header");
+                }
+                final int headerSize = Rar5BaseBlock.checkHeaderSize(first);
+                headerBuffer = safelyAllocate(headerSize, Rar5BaseBlock.MAX_HEADER_SIZE_RAR5);
+                System.arraycopy(first, 0, headerBuffer, 0, Rar5BaseBlock.FIRST_READ_SIZE);
+                final int rest = headerSize - Rar5BaseBlock.FIRST_READ_SIZE;
+                if (fill(headerBuffer, Rar5BaseBlock.FIRST_READ_SIZE, rest) < rest) {
+                    throw new CorruptHeaderException("Truncated RAR5 header body");
+                }
+            }
+            final int headerSize = headerBuffer.length;
+
+            if (encrypted) {
+                // The decrypted header's CRC is the only wrong-password signal under CBC (unrar
+                // maps a mismatch to FailedHeaderDecryption, arcread.cpp:691-696) -- verify it
+                // here so a wrong key surfaces as WrongPasswordException, while a CRC-valid but
+                // structurally broken header still falls through to CorruptHeaderException below.
+                final int storedCrc = Raw.readIntLittleEndian(headerBuffer, 0);
+                final int computedCrc =
+                        RarCRC.computeHeaderCrc32(headerBuffer, 4, headerBuffer.length - 4);
+                if (storedCrc != computedCrc) {
+                    throw new WrongPasswordException(
+                            "RAR5 encrypted header CRC mismatch (wrong password or corrupt"
+                                    + " header)");
+                }
+            }
+            // CRC already validated for the encrypted path, still record-vs-fatal for the
+            // unencrypted path -- pass encrypted=false either way (a wrong key never reaches here).
+            final Rar5BaseBlock base = Rar5BaseBlock.parse(headerBuffer, false);
+            final Rar5BlockType rar5Type = base.getRar5Type();
+            // Captured before dispatch so the seek math below is unaffected by which typed
+            // subclass (if any) the block turns into (M3.3, issue #24).
+            final long rar5DataSize = base.getDataSize();
+
+            final BaseBlock block;
+            if (rar5Type == Rar5BlockType.MAIN
+                    || rar5Type == Rar5BlockType.CRYPT
+                    || rar5Type == Rar5BlockType.ENDARC) {
+                block = Rar5MainHeader.from(base, headerBuffer);
+            } else if (rar5Type == Rar5BlockType.FILE || rar5Type == Rar5BlockType.SERVICE) {
+                block = Rar5FileHeaderReader.read(base, headerBuffer);
+            } else {
+                block = base;
+            }
+            block.setPositionInFile(position);
+            this.headers.add(block);
+
+            // The HEAD_CRYPT block itself is plaintext; header encryption starts with the NEXT
+            // block (unrar sets Encrypted=true only after reading it, arcread.cpp:758).
+            if (rar5Type == Rar5BlockType.CRYPT && block instanceof Rar5MainHeader) {
+                crypto = Rar5HeaderCrypt.from((Rar5MainHeader) block);
+                this.rar5HeadersEncrypted = true;
+            }
+
+            // Encrypted headers consume the 16-byte IV plus the header padded up to the AES block
+            // size (unrar FullHeaderSize, archive.cpp:292-302 -- align-16 on BOTH paths, manual
+            // 4.12).
+            final long consumed =
+                    encrypted ? (Rar5Crypt.SIZE_INITV + alignTo16(headerSize)) : headerSize;
+            // The packed data starts right after the on-disk header; record it for the extractor
+            // (M3.7) so encrypted-header entries locate their data past the IV + AES padding too.
+            if (block instanceof FileHeader) {
+                ((FileHeader) block).setRar5DataStartOffset(position + consumed);
+            }
+            final long newpos = position + consumed + rar5DataSize;
+            // consumed is always positive, so newpos <= position only when the DataSize vint is
+            // negative-as-signed (>= 2^63) or overflows the sum -- a hostile pointer that would
+            // seek backward and spin the loop. unrar rejects NextBlockPos <= CurBlockPos as a
+            // broken header (arcread.cpp); do the same before touching the channel.
+            if (newpos <= position) {
+                throw new CorruptHeaderException("RAR5 block does not advance (corrupt DataSize)");
+            }
+            this.channel.setPosition(newpos);
+            if (processedPositions.contains(newpos)) {
+                throw new BadRarArchiveException();
+            }
+            processedPositions.add(newpos);
+
+            if (rar5Type == Rar5BlockType.ENDARC) {
+                break;
+            }
+        }
+    }
+
+    private static int alignTo16(final int size) {
+        return (size + 15) & ~15;
+    }
+
+    /**
+     * The archive-level RAR5 header-encryption facts carried from the HEAD_CRYPT block to every
+     * subsequent encrypted header (M3.4). The KDF salt/count are the same for the whole archive;
+     * only the per-header IV varies, so the derived key is served from {@link Rar5Crypt}'s cache.
+     */
+    private static final class Rar5HeaderCrypt {
+        final byte[] salt16;
+        final int lg2Count;
+        final boolean usePswCheck;
+        final byte[] pswCheck;
+
+        private Rar5HeaderCrypt(
+                final byte[] salt16,
+                final int lg2Count,
+                final boolean usePswCheck,
+                final byte[] pswCheck) {
+            this.salt16 = salt16;
+            this.lg2Count = lg2Count;
+            this.usePswCheck = usePswCheck;
+            this.pswCheck = pswCheck;
+        }
+
+        static Rar5HeaderCrypt from(final Rar5MainHeader h) {
+            return new Rar5HeaderCrypt(
+                    h.getSalt16(), h.getLg2Count(), h.isUsePswCheck(), h.getPswCheck());
+        }
+    }
+
+    /**
+     * Reads and AES-256-CBC-decrypts one RAR5 header (unrar {@code ReadHeader50}'s decrypt path,
+     * {@code arcread.cpp:559-631}): consume the 16-byte IV, verify the password check value
+     * against the HEAD_CRYPT block, then decrypt through {@link RawDataIo} (which rounds reads up
+     * to the AES block boundary, manual &sect;4.12). The returned buffer is exactly HeadSize bytes.
+     *
+     * @return the decrypted header buffer, or {@code null} at a clean end of channel
+     * @throws WrongPasswordException on a missing password or a password-check mismatch
+     */
+    private byte[] readEncryptedRar5Header(final Rar5HeaderCrypt crypto)
+            throws IOException, RarException {
+        if (this.passwordChars == null) {
+            // unrar's own passwordless -hp open reports "Incorrect password" (probed 2026-07-17).
+            throw new WrongPasswordException("Missing password for header-encrypted RAR5 archive");
+        }
+        final byte[] iv = new byte[Rar5Crypt.SIZE_INITV];
+        final int ivGot = fill(iv, 0, iv.length);
+        if (ivGot == 0) {
+            return null;
+        }
+        if (ivGot < iv.length) {
+            throw new CorruptHeaderException("Truncated RAR5 header IV");
+        }
+
+        final byte[] pwdUtf8 = Rar5Crypt.passwordToUtf8(this.passwordChars);
+        final Rar5Crypt.Kdf kdf;
+        final Cipher cipher;
+        try {
+            kdf = Rar5Crypt.deriveKey(pwdUtf8, crypto.salt16, crypto.lg2Count);
+            cipher = Rar5Crypt.buildDecipherer(kdf.aesKey, iv);
+        } catch (final GeneralSecurityException e) {
+            throw new InitDeciphererFailedException(e);
+        } finally {
+            Arrays.fill(pwdUtf8, (byte) 0);
+        }
+        if (crypto.usePswCheck && !Arrays.equals(kdf.pswCheck, crypto.pswCheck)) {
+            throw new WrongPasswordException("RAR5 password check failed");
+        }
+
+        final RawDataIo rawData = new RawDataIo(this.channel);
+        rawData.setCipher(cipher);
+        final byte[] first = new byte[Rar5BaseBlock.FIRST_READ_SIZE];
+        if (rawData.readFully(first, first.length) < first.length) {
+            throw new CorruptHeaderException("Truncated RAR5 encrypted header");
+        }
+        final int headerSize = Rar5BaseBlock.checkHeaderSize(first);
+        final byte[] headerBuffer = safelyAllocate(headerSize, Rar5BaseBlock.MAX_HEADER_SIZE_RAR5);
+        System.arraycopy(first, 0, headerBuffer, 0, Rar5BaseBlock.FIRST_READ_SIZE);
+        final int rest = headerSize - Rar5BaseBlock.FIRST_READ_SIZE;
+        if (rest > 0) {
+            final byte[] tail = new byte[rest];
+            if (rawData.readFully(tail, rest) < rest) {
+                throw new CorruptHeaderException("Truncated RAR5 encrypted header body");
+            }
+            System.arraycopy(tail, 0, headerBuffer, Rar5BaseBlock.FIRST_READ_SIZE, rest);
+        }
+        return headerBuffer;
+    }
+
+    /**
+     * unrar RAR3 header-CRC verification (P0.7, issue #12; {@code d861246:arcread.cpp
+     * :514-545}, math = {@code GetCRC15} at {@code d861246:rawread.cpp}): full coverage
+     * of every byte in {@code segments}. See
+     * {@link #verifyHeaderCrc(BaseBlock, long, int, byte[]...)}.
+     */
+    private void verifyHeaderCrc(
+            final BaseBlock block, final long fileLength, final byte[]... segments)
+            throws IOException, CorruptHeaderException {
+        verifyHeaderCrc(block, fileLength, -1, segments);
+    }
+
+    /**
+     * unrar RAR3 header-CRC verification (P0.7, issue #12; {@code d861246:arcread.cpp
+     * :431-445} file-header check, {@code :514-545} generic check + exemptions;
+     * {@code d861246:rawread.cpp GetCRC15}): 16-bit CRC over header bytes
+     * [2, coverageLength). A mismatch is <em>recorded</em> on {@code block}
+     * ({@link BaseBlock#setBrokenHeader}) and logged; unencrypted headers keep parsing
+     * (upstream "warn and continue" tolerance). Encrypted headers are fatal at open
+     * (upstream: decrypt succeeds, CRC still fails to match -> stop). EndArc headers
+     * with {@code EARC_REVSPACE} get the trailing-7-zero-bytes recovery check before
+     * being marked broken.
+     * <p>
+     * Callers skip this method entirely for upstream-exempt types (SIGN, AV, old-Unix-
+     * owner sub-blocks -- "Old AV header does not have header CRC properly set") and for
+     * sub-block types junrar does not fully parse (BEEA_HEAD/NTACL_HEAD/STREAM_HEAD --
+     * a partial read would false-positive against a real archive's true, fuller-coverage
+     * CRC) and for {@link MarkHeader} (no CRC concept, its own {@code isSignature}/
+     * {@code isValid} checks the magic bytes instead).
+     * <p>
+     * Divergence (conscious, issue #12): unrar warns and lets the file data CRC decide
+     * at extract time for a broken FILE/NEWSUB header; junrar instead throws
+     * {@link CorruptHeaderException} when a {@link BaseBlock#isBrokenHeader()} entry is
+     * extracted (see {@link #doExtractFile}) -- junrar has no CLI warning channel, and
+     * silent garbage extraction would be worse.
+     *
+     * @param block          the freshly parsed header (its own headCRC is compared)
+     * @param fileLength     the archive's total length (EndArc REVSPACE recovery seeks
+     *                       to {@code fileLength - 7})
+     * @param coverageLength number of header bytes to feed the CRC (counted from the
+     *                       start of {@code segments}, concatenated), or a negative
+     *                       value to cover every byte in {@code segments}
+     * @param segments       the raw byte buffers that make up this header, in read
+     *                       order (base block, block header, type-specific)
+     */
+    private void verifyHeaderCrc(
+            final BaseBlock block,
+            final long fileLength,
+            final int coverageLength,
+            final byte[]... segments)
+            throws IOException, CorruptHeaderException {
+        int totalLength = 0;
+        for (final byte[] segment : segments) {
+            totalLength += segment.length;
+        }
+        final byte[] header = new byte[totalLength];
+        int pos = 0;
+        for (final byte[] segment : segments) {
+            System.arraycopy(segment, 0, header, pos, segment.length);
+            pos += segment.length;
+        }
+        final int coverage = coverageLength >= 0 ? coverageLength : totalLength;
+        final short expected = RarCRC.computeHeaderCrc16(header, 2, coverage - 2);
+        if (block.getHeadCRC() == expected) {
+            return;
+        }
+        if (block.getHeaderType() == UnrarHeadertype.EndArcHeader
+                && block.hasRevSpace()
+                && isEndArcRevSpaceRecovered(fileLength)) {
+            return;
+        }
+        block.setBrokenHeader(true);
+        logger.warn(
+                "Header CRC mismatch for {} at position {}",
+                block.getHeaderType(),
+                block.getPositionInFile());
+        if (this.newMhd != null && this.newMhd.isEncrypted()) {
+            throw new CorruptHeaderException(
+                    "Header CRC mismatch on encrypted header at position "
+                            + block.getPositionInFile());
+        }
+    }
+
+    /**
+     * unrar's ENDARC {@code EARC_REVSPACE} recovery ({@code d861246:arcread.cpp
+     * :525-535}): a REV-recovery-volume archive's last 7 bytes can legitimately be zero
+     * (REV files stash their own metadata there), which would otherwise fail the generic
+     * header-CRC check; treat that specific shape as recovered, not broken.
+     */
+    private boolean isEndArcRevSpaceRecovered(final long fileLength) throws IOException {
+        if (fileLength < 7) {
+            return false;
+        }
+        final long savedPosition = this.channel.getPosition();
+        try {
+            this.channel.setPosition(fileLength - 7);
+            for (int i = 0; i < 7; i++) {
+                if (this.channel.read() != 0) {
+                    return false;
+                }
+            }
+            return true;
+        } finally {
+            this.channel.setPosition(savedPosition);
+        }
+    }
+
+    private static byte[] safelyAllocate(final long len, final int maxSize) throws RarException {
+        if (maxSize < 0) {
+            throw new IllegalArgumentException("maxsize must be >= 0");
+        }
+        if (len < 0 || len > maxSize) {
+            throw new BadRarArchiveException();
+        }
+        return new byte[(int) len];
+    }
+
+    /**
+     * Extract the file specified by the given header and write it to the
+     * supplied output stream
+     *
+     * @param hd the header to be extracted
+     * @param os the outputstream
+     * @throws RarException .
+     */
+    public void extractFile(final FileHeader hd, final OutputStream os) throws RarException {
+        List<FileHeader> fileHeaders = getFileHeaders();
+        int targetIdx = fileHeaders.indexOf(hd);
+        if (targetIdx < 0) {
+            throw new HeaderNotInArchiveException();
+        }
+        try {
+            // newMhd is the RAR4 main header and is null for RAR5 (its solid flag lives on the
+            // Rar5MainHeader / per-file compression info instead), so guard the deref (M3.7).
+            boolean isSolidStream = (newMhd != null && newMhd.isSolid()) || hd.isSolid();
+
+            if (isSolidStream) {
+                // <=: re-extracting the entry just processed also needs a replay; the decoder
+                // state is already past its data.
+                if (targetIdx <= lastProcessedFileIndex) {
+                    // Reset the dictionary unconditionally: doExtractFile only resets it when
+                    // the first file is non-solid, which malformed archives may violate.
+                    if (unpack != null) {
+                        unpack.init(null);
+                    }
+                    // RAR5 engine carries the window across a solid set; a rewind must replay from
+                    // the start with a fresh window, so drop it (re-created lazily in
+                    // doExtractFile).
+                    this.unpack5 = null;
+                    // RAR 1.4 routes its first replayed entry non-solid by this ordinal
+                    // (unrar FileCount, extract.cpp:917-921), so the replay restarts it too.
+                    this.oldFormatExtractedCount = 0;
+                    lastProcessedFileIndex = -1;
+                }
+                for (int i = lastProcessedFileIndex + 1; i < targetIdx; i++) {
+                    skipFile(fileHeaders.get(i));
+                }
+            }
+            doExtractFile(hd, os);
+            // A volume switch during extraction re-parses the header list, so the requested
+            // header's index can go stale; track solid progress by the entry the dataIO
+            // actually finished on (the continuation header in the final volume) as located
+            // in the *current* list (M3.9, issue #30).
+            final int processedIdx = getFileHeaders().indexOf(this.dataIO.getSubHeader());
+            lastProcessedFileIndex = processedIdx >= 0 ? processedIdx : targetIdx;
+        } catch (final Exception e) {
+            // The decoder may have stopped mid-entry: make the next solid extraction replay.
+            lastProcessedFileIndex = Integer.MAX_VALUE;
+            if (e instanceof RarException) {
+                throw (RarException) e;
+            } else {
+                throw new RarException(e);
+            }
+        }
+    }
+
+    private void skipFile(FileHeader skipHd) {
+        if (skipHd.getFullUnpackSize() <= 0) {
+            return;
+        }
+        try {
+            doExtractFile(skipHd, new NullOutputStream(), true);
+        } catch (RarException e) {
+            logger.warn("Error skipping file {}: {}", skipHd.getFileName(), e.getMessage());
+        } catch (IOException e) {
+            logger.warn("IO error skipping file {}: {}", skipHd.getFileName(), e.getMessage());
+        }
+    }
+
+    private static class NullOutputStream extends OutputStream {
+        @Override
+        public void write(int b) {
+            // No-op
+        }
+    }
+
+    /**
+     * Class to ensure the lazy initialization of the {@link ThreadPoolExecutor} upon first usage.<br><br>
+     * <p>
+     * Using a cached thread pool executor is more efficient and creating a new thread for each extraction.
+     * The total number of threads will only increase if there are tasks on its queue and all current threads are busy.
+     * If there are available threads, those will be reused instead of a new one being created.
+     * <br><br>
+     * <p>
+     * Configuration options:
+     * <ul>
+     * <li>To avoid the possibility of too many simultaneous active threads being started, the maximum
+     * number of threads can be configured through the {@code junrar.extractor.max-threads} system property.
+     * The default maximum number of threads is unbounded.</li>
+     * <li>The keep alive time can be configured through the {@code junrar.extractor.thread-keep-alive-seconds} system property.
+     * The default is 5s.</li>
+     * </ul>
+     */
+    private static final class ExtractorExecutorHolder {
+        private ExtractorExecutorHolder() {}
+
+        private static final AtomicLong threadIndex = new AtomicLong();
+
+        /**
+         * Equivalent to {@link java.util.concurrent.Executors#newCachedThreadPool()}, but customizable through system properties.
+         */
+        private static final ExecutorService cachedExecutorService =
+                new ThreadPoolExecutor(
+                        0,
+                        getMaxThreads(),
+                        getThreadKeepAlive(),
+                        TimeUnit.SECONDS,
+                        new SynchronousQueue<>(),
+                        r -> {
+                            Thread t =
+                                    new Thread(
+                                            r, "junrar-extractor-" + threadIndex.getAndIncrement());
+                            t.setDaemon(true);
+                            return t;
+                        });
+
+        private static int getMaxThreads() {
+            return getPropertyAs(
+                    "junrar.extractor.max-threads", Integer::parseInt, Integer.MAX_VALUE);
+        }
+
+        private static int getThreadKeepAlive() {
+            return getPropertyAs(
+                    "junrar.extractor.thread-keep-alive-seconds", Integer::parseInt, 5);
+        }
+    }
+
+    private static <T> T getPropertyAs(String key, Function<String, T> function, T defaultValue) {
+        Objects.requireNonNull(defaultValue, "default value must not be null");
+        try {
+            String integerString = System.getProperty(key);
+            if (integerString != null && !integerString.isEmpty()) {
+                return function.apply(integerString);
+            }
+        } catch (SecurityException | NumberFormatException e) {
+            logger.error(
+                    "Could not parse the System Property '{}' into an '{}'. Defaulting to '{}'",
+                    key,
+                    defaultValue.getClass().getTypeName(),
+                    defaultValue,
+                    e);
+        }
+        return defaultValue;
+    }
+
+    /**
+     * Returns an {@link InputStream} that will allow to read the file and stream it. <br>
+     * Please note that this method will create a pair of Pipe streams and either: <br>
+     *
+     * <ul>
+     *     <li>delegate the work to a {@link ThreadPoolExecutor}, via {@link ExtractorExecutorHolder}; or</li>
+     *     <li>delegate the work to a newly created thread on each call</li>
+     * </ul>
+     * <p>
+     * You can choose which strategy to use by setting the {@code junrar.extractor.use-executor} system property.<br>
+     * Defaults to using the {@link ThreadPoolExecutor}.
+     *
+     * @param hd the header to be extracted
+     * @return an {@link InputStream} from which you can read the uncompressed bytes. If extraction
+     *     fails (for example a {@link com.github.junrar.exception.CrcErrorException}), a read
+     *     throws an {@link IOException} whose cause is that failure, instead of returning end of
+     *     stream: at the latest, the read that reaches the entry's declared unpacked size.
+     * @throws IOException if any I/O error occur
+     * @see ExtractorExecutorHolder
+     */
+    public InputStream getInputStream(final FileHeader hd) throws IOException {
+        // Small optimization to prevent the creation of large buffers for very small files
+        // Never allocate more than needed, but ensure the buffer will be at least 1-byte long
+        final int bufferSize =
+                (int) Math.max(Math.min(hd.getFullUnpackSize(), PIPE_BUFFER_SIZE), 1);
+
+        final FailurePropagatingPipedInputStream in =
+                new FailurePropagatingPipedInputStream(bufferSize, hd.getFullUnpackSize());
+        final PipedOutputStream out = new PipedOutputStream(in);
+
+        // Data will be available in another InputStream, connected to the OutputStream
+        // Delegates execution to the cached executor service.
+        // GHSA-frq4-6xmx-hm4g: a failure must not close the pipe into a normal EOF; record it
+        // first so the reader's EOF turns into an IOException carrying it.
+        Runnable r =
+                () -> {
+                    try {
+                        extractFile(hd, out);
+                    } catch (final Throwable t) {
+                        in.failure = t;
+                    } finally {
+                        try {
+                            out.close();
+                        } catch (final IOException ignored) {
+                        }
+                    }
+                };
+        if (USE_EXECUTOR) {
+            ExtractorExecutorHolder.cachedExecutorService.submit(r);
+        } else {
+            new Thread(r).start();
+        }
+
+        return in;
+    }
+
+    /**
+     * A pipe whose reads throw, instead of returning end of stream, when the extraction feeding
+     * it failed. Like {@link java.util.zip.ZipInputStream} on a stored entry, the read that
+     * reaches the declared size already reports it, so callers that read exactly that many bytes
+     * see the failure too; a check after the last byte (the CRC) would otherwise go unseen.
+     */
+    private static final class FailurePropagatingPipedInputStream extends PipedInputStream {
+        private final long size;
+        private volatile Throwable failure;
+        private long consumed;
+        // PipedInputStream's bulk read takes its first byte through read(); counted there.
+        private boolean inBulkRead;
+        // A byte the look-ahead read past the declared size, returned by the next read.
+        private int pending = -1;
+
+        FailurePropagatingPipedInputStream(final int pipeSize, final long size) {
+            super(pipeSize);
+            this.size = size;
+        }
+
+        @Override
+        public synchronized int read() throws IOException {
+            if (inBulkRead) {
+                return super.read();
+            }
+            if (pending >= 0) {
+                final int b = pending;
+                pending = -1;
+                return b;
+            }
+            final int b = checkEof(super.read());
+            if (b >= 0) {
+                consumed(1);
+            }
+            return b;
+        }
+
+        @Override
+        public synchronized int read(final byte[] b, final int off, final int len)
+                throws IOException {
+            if (len > 0 && pending >= 0) {
+                b[off] = (byte) pending;
+                pending = -1;
+                return 1;
+            }
+            final int n;
+            inBulkRead = true;
+            try {
+                n = checkEof(super.read(b, off, len));
+            } finally {
+                inBulkRead = false;
+            }
+            if (n > 0) {
+                consumed(n);
+            }
+            return n;
+        }
+
+        /** On reaching the declared size, look ahead for the end so a failure is thrown now. */
+        private void consumed(final int n) throws IOException {
+            final long before = consumed;
+            consumed += n;
+            if (before < size && consumed >= size) {
+                // Output may exceed the declared size (RAR5 filter blocks are written whole,
+                // as in unrar d861246:unpack50.cpp:359): keep the byte rather than reject it.
+                pending = checkEof(super.read());
+            }
+        }
+
+        private int checkEof(final int n) throws IOException {
+            final Throwable t = failure;
+            if (n == -1 && t != null) {
+                throw new IOException("Extraction failed", t);
+            }
+            return n;
+        }
+    }
+
+    private void doExtractFile(FileHeader hd, final OutputStream os)
+            throws RarException, IOException {
+        doExtractFile(hd, os, false);
+    }
+
+    private void doExtractFile(FileHeader hd, final OutputStream os, boolean skip)
+            throws RarException, IOException {
+        // P0.7 / issue #12 conscious divergence: unrar warns and lets the file data CRC
+        // decide at extract time for a broken FILE/NEWSUB header; junrar has no CLI
+        // warning channel, so silent garbage extraction would be worse -- refuse instead.
+        if (hd.isBrokenHeader()) {
+            // Not "CRC mismatch": isBrokenHeader() also covers a header that announced a field
+            // its own declared size did not hold, whose checksum may never have been reached.
+            throw new CorruptHeaderException(
+                    "Cannot extract '" + hd.getFileName() + "': its header is broken");
+        }
+        // Started mid-set: the entry's data begins in a volume this extraction never saw
+        // (M3.9, issue #30; unrar UIERROR_NEEDPREVVOL, 8f437ab:extract.cpp:471-482 — the
+        // AnalyzeArchive first-volume rewind is CLI convenience, a recorded non-goal).
+        // RAR3/RAR4 keep their historical untyped behavior. A container fact, not a version one
+        // (issue #43): an unrecognized-algorithm-version entry is still in a RAR5 container and
+        // can still start mid-set, so isRar5Family() alone would let it slip past this guard.
+        if ((hd.isRar5Family() || hd.isRar5Container()) && hd.isSplitBefore()) {
+            throw new MissingPreviousVolumeException(
+                    "Extraction of '" + hd.getFileName() + "' must start from a previous volume");
+        }
+        // P2's temporary guard here (issue #293) refused every RAR 1.4 encrypted entry outright,
+        // since P2 had no CRYPT_RAR13 implementation and the Rijndael/AES path below is wrong
+        // for this entry. P3 removed the guard: ComprDataIO#init(FileHeader) now selects
+        // CRYPT_RAR13/15/20 correctly via RarLegacyCrypt#select (unrar arcread.cpp:1300 for the
+        // RARFMT14 case this guard used to intercept).
+        this.dataIO.init(os);
+        this.dataIO.init(hd);
+        this.dataIO.setUnpFileCRC(this.isOldFormat() ? 0 : 0xffFFffFF);
+        try {
+            if (hd.isRar5Family()) {
+                extractRar5(hd);
+            } else if (hd.isRar5Container()) {
+                // A RAR5-container entry whose algorithm version this build does not recognize
+                // (VER_UNKNOWN) -- unrar's CheckUnpVer (d861246:extract.cpp:1517-1545) refuses it
+                // BY NAME above VER_UNPACK7, but extracts regardless when Method==0: a stored
+                // stream carries no version-specific encoding, so it must still reach extractRar5
+                // rather than the RAR3 unpack switch below, which matches no case, writes
+                // nothing, and would surface a bogus CrcErrorException (issue #43).
+                if (hd.getUnpMethod() != 0) {
+                    throw new UnsupportedRarMethodException(
+                            "Unsupported RAR5 compression algorithm version: "
+                                    + hd.getUnpVersion());
+                }
+                extractRar5(hd);
+            } else {
+                if (this.unpack == null) {
+                    this.unpack = new Unpack(this.dataIO);
+                }
+                final int effectiveUnpVersion;
+                final boolean effectiveSolid;
+                if (this.format == RarFormat.RAR14) {
+                    // unrar extract.cpp:773 (FileCount++, before the Method==0 split) +
+                    // :917-921 (P2, issue #293): every RAR 1.3-1.5 entry this session --
+                    // stored or compressed -- advances the ordinal; RAR 1.4 carries no
+                    // per-file solid flag (hd.isSolid() is always false for a RAR14-container
+                    // entry -- LHD_SOLID is never set by Rar14HeaderReader), so the first
+                    // entry extracted always forces solid=false and every later one inherits
+                    // the archive-level MHD_SOLID flag instead. Scoped to format==RAR14 only
+                    // (not every UnpVer<=15 entry, which would also match unrar's condition)
+                    // to leave the shipped RAR15 per-file hd.isSolid() semantic in the else
+                    // branch below untouched -- real RAR15 headers carry a meaningful solid
+                    // bit RAR 1.4 never had (P2 brief scoping decision, extract.cpp:918).
+                    this.oldFormatExtractedCount++;
+                    effectiveSolid = this.oldFormatExtractedCount > 1 && this.newMhd.isSolid();
+                    // unrar never calls DoUnpack at all for Method==0 (UnstoreFile only,
+                    // extract.cpp:903-904); junrar's Unpack.doUnpack instead folds both paths
+                    // into one call, with no `return` after its own internal unstoreFile()
+                    // shortcut (getUnpMethod()==0x30). Hardcoding version 15 for a stored 1.4
+                    // entry too would make that switch's `case 15` run unpack15() a second
+                    // time on top of the already-unstored bytes -- so only the compressed
+                    // branch reroutes; the stored branch keeps the entry's own non-matching
+                    // (10 or 13) UnpVer, the existing safe no-op RAR3's stored entries rely on.
+                    effectiveUnpVersion = hd.getUnpMethod() == 0x30 ? hd.getUnpVersion() : 15;
+                } else {
+                    effectiveSolid = hd.isSolid();
+                    effectiveUnpVersion = hd.getUnpVersion();
+                }
+                if (!effectiveSolid) {
+                    this.unpack.init(null);
+                }
+                this.unpack.setDestSize(hd.getFullUnpackSize());
+                invokeDoUnpack(effectiveUnpVersion, effectiveSolid);
+            }
+            if (!skip) {
+                hd = this.dataIO.getSubHeader();
+                if (!hd.isSplitAfter() && hd.getHashType() == Rar5HashType.BLAKE2) {
+                    // A BLAKE2 entry carries no CRC32 word: verify the 32-byte digest instead
+                    // (MAC-space for encrypted entries — ConvertHashToMAC, M3.8 issue #29).
+                    if (!Arrays.equals(this.dataIO.getUnpHashDigest(), hd.getHashDigest())) {
+                        throw new CrcErrorException();
+                    }
+                } else if (this.isOldFormat()) {
+                    // RAR 1.4 Checksum14 (P2, issue #293; unrar hash.cpp:33-35 HASH_RAR14 arm):
+                    // RAW 16-bit equality, unlike the ~crc convention every later format uses.
+                    // ComprDataIO#unpWrite already routes through RarCRC.checkOldCrc for
+                    // isOldFormat() (dormant since before P1); this is the missing compare site.
+                    final long actualCRC = this.dataIO.getUnpFileCRC() & 0xffffL;
+                    final long expectedCRC = hd.getFileCRC() & 0xffffL;
+                    if (actualCRC != expectedCRC) {
+                        throw new CrcErrorException();
+                    }
+                } else if (hd.hasFileCrc()) {
+                    // Verify file CRC
+                    final long actualCRC =
+                            hd.isSplitAfter()
+                                    ? ~this.dataIO.getPackedCRC()
+                                    : ~this.dataIO.getUnpFileCRC();
+                    final int expectedCRC = hd.getFileCRC();
+                    if (actualCRC != expectedCRC) {
+                        throw new CrcErrorException();
+                    }
+                }
+                // else: a RAR5 entry that stores no checksum (unrar HASH_NONE). There is nothing
+                // to verify -- unrar treats a missing hash as valid (d861246:extract.cpp:934)
+                // and prints "?", so extraction must succeed rather than compare against a
+                // zero CRC.
+            }
+            // if (!hd.isSplitAfter()) {
+            // // Verify file CRC
+            // if(~dataIO.getUnpFileCRC() != hd.getFileCRC()){
+            // throw new RarException(RarExceptionType.crcError);
+            // }
+            // }
+        } catch (final Exception e) {
+            if (this.unpack != null) {
+                this.unpack.cleanUp();
+            }
+            if (e instanceof RarException) {
+                throw (RarException) e;
+            } else {
+                throw new RarException(e);
+            }
+        }
+    }
+
+    /**
+     * The ONLY call site that invokes {@link Unpack#doUnpack(int, boolean)} (P2 fix round 3,
+     * issue #293, gate finding on coverage row 7): isolated into its own package-private,
+     * overridable method so a same-package test can observe the EXACT {@code (version, solid)}
+     * argument pair {@link #doExtractFile} computed and passed for the old-format (RAR 1.4)
+     * routing branch, rather than only an indirect side effect ({@link
+     * #getOldFormatExtractedCount()} alone, gate-proven insufficient -- both a hardcoded
+     * {@code effectiveSolid=false} and, separately, {@code effectiveSolid=true} survived the
+     * whole suite against it). {@link Unpack} itself is {@code final} and cannot be subclassed,
+     * so this method -- not the {@code unpack} field -- is the narrowest available injection
+     * point that still pins the real argument seam. Default behavior is the unmodified real
+     * call; no production caller overrides this.
+     *
+     * @param unpVersion the algorithm version to decode with (unrar {@code UnpVer}, hardcoded
+     *                    15 for a compressed RAR 1.4 entry -- see the {@link #doExtractFile}
+     *                    routing comment).
+     * @param solid      whether to continue the LZ window from the previous entry.
+     */
+    void invokeDoUnpack(final int unpVersion, final boolean solid)
+            throws IOException, RarException {
+        this.unpack.doUnpack(unpVersion, solid);
+    }
+
+    /**
+     * Extract one RAR5/RAR7 entry through the per-archive {@link Unpack5} engine (M3.7, M4.2).
+     * Stored entries (method 0) copy straight through the CRC/hash seam; compressed entries size
+     * the per-archive window from the header dictionary and run the decode loop. A solid entry
+     * reuses the same engine so its LZ window continues from the preceding file.
+     */
+    private void extractRar5(final FileHeader hd) throws IOException, RarException {
+        if (this.unpack5 == null) {
+            this.unpack5 = new Unpack5(this.dataIO, false);
+        }
+        // Per entry, not per engine: a solid stream may mix versions, and the window must survive
+        // the switch (d861246:unpack.cpp:184).
+        this.unpack5.setExtraDist(hd.getUnpVersion() == 70);
+        this.unpack5.setDestSize(hd.getFullUnpackSize());
+        if (hd.getUnpMethod() == 0) {
+            this.unpack5.unstore();
+        } else {
+            this.unpack5.init(hd.getRar5WinSize(), hd.isSolid());
+            this.unpack5.unpack5(hd.isSolid());
+        }
+    }
+
+    /**
+     * @return returns the main header of this archive
+     */
+    public MainHeader getMainHeader() {
+        return this.newMhd;
+    }
+
+    /**
+     * @return whether the archive is old format; always {@code false} for RAR5 ({@code markHead}
+     *         is never populated on the {@link #readHeadersRar5} path -- M3.5, issue #26, "old
+     *         format" is a RAR 1.3-era wire fact RAR5 cannot have).
+     */
+    public boolean isOldFormat() {
+        return this.markHead != null && this.markHead.isOldFormat();
+    }
+
+    /**
+     * Test-observable seam for the {@link #oldFormatExtractedCount} solid-routing ordinal (P2,
+     * issue #293, coverage row 7): package-private rather than reflection, per the P2 brief's
+     * "add a package-private getter and say so." Not part of the public API.
+     *
+     * @return how many old-format (RAR 1.4) entries {@link #doExtractFile} has processed (fully
+     *         extracted or solid-skipped) so far this session.
+     */
+    int getOldFormatExtractedCount() {
+        return this.oldFormatExtractedCount;
+    }
+
+    /**
+     * Tears down the current channel/unpacker without wiping the password, so a
+     * volume switch (multi-volume archives) can keep decrypting headers. Internal
+     * use only; {@link #close()} is the password-wiping terminal counterpart.
+     */
+    private void resetChannel() throws IOException {
+        if (this.channel != null) {
+            this.channel.close();
+            this.channel = null;
+        }
+        if (this.unpack != null) {
+            this.unpack.cleanUp();
+        }
+        this.rar5HeadersEncrypted = false;
+    }
+
+    /**
+     * Close the underlying compressed file and wipe the internal password copy along with any
+     * derived RAR4 key material.
+     */
+    @Override
+    public void close() throws IOException {
+        resetChannel();
+        if (this.passwordChars != null) {
+            Arrays.fill(this.passwordChars, '\0');
+        }
+        this.rar4KdfCache.wipe();
+    }
+
+    /**
+     * @return the volumeManager
+     */
+    public VolumeManager getVolumeManager() {
+        return this.volumeManager;
+    }
+
+    /**
+     * @param volumeManager the volumeManager to set
+     */
+    public void setVolumeManager(final VolumeManager volumeManager) {
+        this.volumeManager = volumeManager;
+    }
+
+    /**
+     * @return the volume
+     */
+    public Volume getVolume() {
+        return this.volume;
+    }
+
+    /**
+     * @return the password as a {@code String}, which cannot be wiped from memory;
+     *         prefer keeping the password as {@code char[]} where feasible.
+     * @see ArchiveOptions#getPassword()
+     */
+    public String getPassword() {
+        return passwordAsString();
+    }
+
+    public void setPassword(String password) {
+        this.passwordChars = password == null ? null : password.toCharArray();
+    }
+
+    private String passwordAsString() {
+        return this.passwordChars == null ? null : new String(this.passwordChars);
+    }
+
+    /**
+     * Build an AES decipherer for a RAR4 encrypted header or file, reusing this archive's derived
+     * key when the salt repeats (unrar {@code CryptData::KDF3Cache}). Exposed for
+     * {@code ComprDataIO}; the cache stays owned by this archive so {@link #close()} can wipe it.
+     *
+     * @param salt the entry's 8-byte RAR3 salt
+     */
+    public Cipher buildRar4Decipherer(final byte[] salt) throws GeneralSecurityException {
+        return this.rar4KdfCache.buildDecipherer(passwordAsString(), salt);
+    }
+
+    /**
+     * @return the extraction dictionary-size budget in bytes ({@link ArchiveOptions#getMaxDictionarySize()}).
+     */
+    public long getMaxDictionarySize() {
+        return this.maxDictionarySize;
+    }
+
+    /**
+     * Test hook (P0.8 wipe-on-close acceptance row): exposes the live internal
+     * array reference, not a copy, so a test can observe it being zeroed by
+     * {@link #close()}.
+     */
+    char[] getPasswordChars() {
+        return this.passwordChars;
+    }
+
+    /**
+     * @param volume the volume to set
+     * @throws IOException  .
+     * @throws RarException .
+     */
+    public void setVolume(final Volume volume) throws IOException, RarException {
+        this.volume = volume;
+        setChannel(volume.getChannel(), volume.getLength());
+    }
+
+    @Override
+    public Iterator<FileHeader> iterator() {
+        return new Iterator<FileHeader>() {
+
+            @Override
+            public FileHeader next() {
+                FileHeader next;
+                if (Archive.this.nextFileHeader != null) {
+                    next = Archive.this.nextFileHeader;
+                } else {
+                    next = nextFileHeader();
+                }
+                return next;
+            }
+
+            @Override
+            public boolean hasNext() {
+                Archive.this.nextFileHeader = nextFileHeader();
+                return Archive.this.nextFileHeader != null;
+            }
+        };
+    }
+}

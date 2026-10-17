@@ -1,0 +1,57 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.kaizen.tool"
+    android:versionCode="5"
+    android:versionName="1.0-m5">
+
+    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="30" />
+
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
+    <!-- Android 13+: cần để hiện notification tiến trình (targetSdk 30 được auto-grant) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- BẮT BUỘC cho Shizuku: server chỉ gửi binder cho app khai báo quyền này -->
+    <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
+
+    <application
+        android:label="Kaizen Tool"
+        android:icon="@drawable/ic_launcher"
+        android:theme="@style/AppTheme"
+        android:requestLegacyExternalStorage="true">
+
+        <activity
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- M5: Settings + About -->
+        <activity android:name=".SettingsActivity" />
+        <activity android:name=".AboutActivity" />
+
+        <!-- In-app media viewer -->
+        <activity android:name=".ImageViewerActivity" />
+        <activity android:name=".VideoPlayerActivity" />
+        <activity android:name=".AudioPlayerActivity" />
+
+        <provider
+            android:name=".ApkFileProvider"
+            android:authorities="com.kaizen.tool.apkprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+        <provider
+            android:name=".GenericFileProvider"
+            android:authorities="com.kaizen.tool.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true" />
+
+    </application>
+
+</manifest>

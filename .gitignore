@@ -1,0 +1,21 @@
+# Build outputs
+build/
+*.apk
+*.idsig
+*.dex
+
+# Keystore (private signing key - never commit)
+*.keystore
+*.jks
+
+# Binary dependencies (download separately)
+libs/*.jar
+
+# Large AI-generated artwork
+art/
+
+# IDE / OS
+.idea/
+*.iml
+.DS_Store
+Thumbs.db

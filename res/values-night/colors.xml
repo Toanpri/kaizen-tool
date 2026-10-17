@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="colorPrimary">#f06292</color>
+    <color name="colorPrimaryDark">#f06292</color>
+    <color name="colorAccent">#ff80ab</color>
+    <color name="windowBackground">#1a1215</color>
+    <color name="cardBackground">#2b1e23</color>
+    <color name="textPrimary">#fce4ec</color>
+    <color name="textSecondary">#b09aa2</color>
+    <color name="divider">#4a3540</color>
+    <color name="selectedBackground">#5c2f3d</color>
+    <color name="pathBarBackground">#3a232b</color>
+</resources>
