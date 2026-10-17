@@ -97,6 +97,13 @@ public class ShizukuHelper {
         return sBinder != null && sBinder.isBinderAlive();
     }
 
+    /**
+     * Lấy binder hiện tại (dùng bởi ShizukuProvider).
+     */
+    public static IBinder getBinder() {
+        return sBinder;
+    }
+
     public static boolean hasPermission() {
         return sPermissionGranted && isRunning();
     }

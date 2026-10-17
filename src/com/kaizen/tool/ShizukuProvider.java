@@ -3,26 +3,42 @@ package com.kaizen.tool;
 import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.pm.ProviderInfo;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Bundle;
 import android.os.IBinder;
-import android.os.Parcel;
 import android.util.Log;
 
 /**
  * ShizukuProvider — nhận binder từ Shizuku server.
  *
- * Shizuku server sẽ gọi ContentResolver.call() với method "sendBinder"
- * để gửi IBinder qua. Provider này chỉ cần tồn tại (enabled) để
- * Shizuku phát hiện app trong danh sách.
+ * Dựa trên rikka.shizuku.ShizukuProvider (Apache 2.0), rút gọn:
+ * - Bỏ Sui dependency (gây crash)
+ * - Bỏ multi-process support (không cần)
+ * - Giữ nguyên protocol: METHOD_SEND_BINDER + BinderContainer
  *
- * Không phụ thuộc lib chính thức (tránh crash như v1.0-m5).
+ * Shizuku server tự động gửi binder khi khởi động cho mọi app
+ * khai báo moe.shizuku.manager.permission.API_V23.
  */
 public class ShizukuProvider extends ContentProvider {
 
     private static final String TAG = "ShizukuProvider";
-    private static final String METHOD_SEND_BINDER = "sendBinder";
+
+    public static final String METHOD_SEND_BINDER = "sendBinder";
+    public static final String METHOD_GET_BINDER = "getBinder";
+
+    private static final String EXTRA_BINDER =
+            "moe.shizuku.privileged.api.intent.extra.BINDER";
+
+    @Override
+    public void attachInfo(Context context, ProviderInfo info) {
+        super.attachInfo(context, info);
+        if (info.multiprocess)
+            throw new IllegalStateException("android:multiprocess must be false");
+        if (!info.exported)
+            throw new IllegalStateException("android:exported must be true");
+    }
 
     @Override
     public boolean onCreate() {
@@ -32,44 +48,43 @@ public class ShizukuProvider extends ContentProvider {
 
     @Override
     public Bundle call(String method, String arg, Bundle extras) {
-        Log.d(TAG, "call: " + method);
-        if (METHOD_SEND_BINDER.equals(method) && extras != null) {
-            try {
-                // Thử đọc binder từ extras (key "binder")
-                IBinder binder = null;
+        if (extras == null) return null;
 
-                // Cách 1: trực tiếp từ Bundle (API 18+)
-                try {
-                    binder = extras.getBinder("binder");
-                } catch (Exception e) {
-                    Log.w(TAG, "getBinder failed: " + e.getMessage());
-                }
+        // Quan trọng: set class loader để đọc BinderContainer Parcelable
+        extras.setClassLoader(BinderContainer.class.getClassLoader());
 
-                // Cách 2: qua Parcel (fallback)
-                if (binder == null) {
-                    try {
-                        Parcel p = Parcel.obtain();
-                        // Không có cách trực tiếp, bỏ qua
-                        p.recycle();
-                    } catch (Exception e) {
-                        Log.w(TAG, "Parcel fallback failed");
-                    }
-                }
-
-                if (binder != null) {
-                    Log.i(TAG, "Binder received!");
-                    ShizukuHelper.onBinderReceived(binder);
-                } else {
-                    Log.w(TAG, "Binder is null in extras");
-                }
-            } catch (Exception e) {
-                Log.e(TAG, "Error handling sendBinder", e);
+        Bundle reply = new Bundle();
+        if (METHOD_SEND_BINDER.equals(method)) {
+            handleSendBinder(extras);
+        } else if (METHOD_GET_BINDER.equals(method)) {
+            IBinder binder = ShizukuHelper.getBinder();
+            if (binder != null && binder.pingBinder()) {
+                reply.putParcelable(EXTRA_BINDER, new BinderContainer(binder));
+            } else {
+                return null;
             }
         }
-        return null;
+        return reply;
     }
 
-    // Các method bắt buộc của ContentProvider (không dùng)
+    private void handleSendBinder(Bundle extras) {
+        // Nếu đã có binder sống thì bỏ qua
+        IBinder existing = ShizukuHelper.getBinder();
+        if (existing != null && existing.pingBinder()) {
+            Log.d(TAG, "sendBinder called but binder already alive");
+            return;
+        }
+
+        BinderContainer container = extras.getParcelable(EXTRA_BINDER);
+        if (container != null && container.binder != null) {
+            Log.i(TAG, "Binder received from Shizuku server!");
+            ShizukuHelper.onBinderReceived(container.binder);
+        } else {
+            Log.w(TAG, "sendBinder: no binder in extras");
+        }
+    }
+
+    // Các method bắt buộc (không dùng)
     @Override
     public Cursor query(Uri uri, String[] projection, String selection,
                         String[] selectionArgs, String sortOrder) {
