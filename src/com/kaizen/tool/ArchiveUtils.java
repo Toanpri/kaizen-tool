@@ -130,23 +130,67 @@ public class ArchiveUtils {
     public static void extractEntries(File archiveFile, int kind, List<String> entryNames,
                                       File destDir, boolean overwrite, String password,
                                       FileOps.OpCallback cb, CancelToken token) {
+        // v1.1-m3 fix: nếu entry là thư mục (vd "Sao chép" folder trong archive),
+        // phải bung kèm toàn bộ file con bên trong — nếu không chỉ tạo vỏ folder rỗng.
+        List<String> expanded = expandDirEntries(archiveFile, kind, entryNames);
         if (kind == KIND_ZIP) {
             if (password != null || ZipUtils.isEncryptedZip(archiveFile)) {
                 // TODO: extractEntries cho ZIP mã hóa — hiện tại giải nén toàn bộ
                 ZipUtils.extractZipEncrypted(archiveFile, destDir, overwrite, password, cb, token);
             } else {
-                ZipUtils.extractEntries(archiveFile, entryNames, destDir, overwrite, cb, token);
+                ZipUtils.extractEntries(archiveFile, expanded, destDir, overwrite, cb, token);
             }
         } else if (kind == KIND_7Z) {
-            SevenZUtils.extractEntries(archiveFile, entryNames, destDir, overwrite, cb, token);
+            SevenZUtils.extractEntries(archiveFile, expanded, destDir, overwrite, cb, token);
         } else if (kind == KIND_TAR) {
             TarUtils.extractEntries(archiveFile, isTarGzip(archiveFile),
-                    entryNames, destDir, overwrite, cb, token);
+                    expanded, destDir, overwrite, cb, token);
         } else if (kind == KIND_REM) {
-            RemArchive.extractEntries(archiveFile, entryNames, destDir, overwrite, password, cb, token);
+            RemArchive.extractEntries(archiveFile, expanded, destDir, overwrite, password, cb, token);
         } else if (cb != null) {
             cb.onDone(false, "Định dạng không hỗ trợ");
         }
+    }
+
+    /**
+     * Bung các entry thư mục thành: chính nó + toàn bộ entry con bên trong.
+     * Entry file giữ nguyên. Trả về list mới (giữ thứ tự, không trùng).
+     */
+    private static List<String> expandDirEntries(File archiveFile, int kind,
+                                                 List<String> entryNames) {
+        if (entryNames == null || entryNames.isEmpty()) return entryNames;
+        boolean hasDir = false;
+        for (String n : entryNames) {
+            if (n != null && n.endsWith("/")) { hasDir = true; break; }
+        }
+        if (!hasDir) return entryNames; // toàn file lẻ — khỏi liệt kê lại archive
+        List<ArchiveEntryInfo> all;
+        try {
+            all = listEntries(archiveFile, kind);
+        } catch (Exception e) {
+            return entryNames;
+        }
+        if (all == null || all.isEmpty()) return entryNames;
+        java.util.LinkedHashSet<String> out = new java.util.LinkedHashSet<String>();
+        for (String n : entryNames) {
+            if (n == null) continue;
+            if (n.endsWith("/")) {
+                // Thêm chính thư mục nếu archive có entry tường minh cho nó
+                // (nhiều ZIP không lưu entry folder riêng — chỉ có file con).
+                for (ArchiveEntryInfo e : all) {
+                    if (e.name.equals(n)) { out.add(n); break; }
+                }
+                // Rồi toàn bộ con cháu bên trong.
+                for (ArchiveEntryInfo e : all) {
+                    if (e.name.startsWith(n) && !e.name.equals(n)) {
+                        out.add(e.name);
+                    }
+                }
+            } else {
+                out.add(n);
+            }
+        }
+        return new java.util.ArrayList<String>(out);
     }
 
     /** Archive có yêu cầu mật khẩu khi giải nén không (ZIP AES / REM mã hóa). */

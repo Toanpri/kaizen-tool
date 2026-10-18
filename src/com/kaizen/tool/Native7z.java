@@ -431,39 +431,42 @@ public class Native7z {
             StringBuilder cur = new StringBuilder();
             int lastPct = -1;
             String currentFile = null;
-            byte[] buf = new byte[4096];
-            int n;
-            while ((n = stdout.read(buf)) != -1) {
+            // Decode UTF-8 chuẩn qua InputStreamReader (tên file tiếng Việt là
+            // UTF-8 nhiều byte; đọc byte thô rồi ép (char) sẽ vỡ thành mojibake
+            // kiểu "§©"). Reader tự nối đúng các byte bị chia cắt giữa 2 lần đọc.
+            java.io.InputStreamReader reader =
+                    new java.io.InputStreamReader(stdout, "UTF-8");
+            int ch;
+            while ((ch = reader.read()) != -1) {
                 if (token != null && token.isCancelled()) {
                     p.destroy();
+                    try { reader.close(); } catch (Exception ignored) {}
                     return "Đã hủy";
                 }
-                for (int i = 0; i < n; i++) {
-                    char c = (char) (buf[i] & 0xFF);
-                    // 7zz trên Linux/Android cập nhật dòng % bằng '\b' (backspace),
-                    // không phải '\r' như trên Windows (xem ClosePrint trong
-                    // PercentPrinter.cpp) — phải tách theo '\b' mới thấy % live.
-                    if (c == '\r' || c == '\n' || c == '\b') {
-                        String chunk = cur.toString();
-                        // v1.1-m3: với -bb1, 7zz in "+ <đường dẫn>" mỗi khi bắt đầu
-                        // nén 1 file -> hiện tên file đang nén lên dialog.
-                        boolean isFile = chunk.startsWith("+ ") && chunk.length() > 2;
-                        if (isFile) {
-                            currentFile = chunk.substring(2).trim();
-                        }
-                        int pct = parsePct(chunk, lastPct);
-                        if (pct >= 0 && pct != lastPct) {
-                            lastPct = pct;
-                            progress(cb, pct, groupIndex, groupCount, currentFile);
-                        } else if (isFile && lastPct >= 0) {
-                            // Tên file đổi nhưng % chưa kịp đổi -> cập nhật tên ngay.
-                            progress(cb, lastPct, groupIndex, groupCount, currentFile);
-                        }
-                        cur.setLength(0);
-                    } else {
-                        cur.append(c);
-                        if (cur.length() > 256) cur.delete(0, cur.length() - 256);
+                char c = (char) ch;
+                // 7zz trên Linux/Android cập nhật dòng % bằng '\b' (backspace),
+                // không phải '\r' như trên Windows (xem ClosePrint trong
+                // PercentPrinter.cpp) — phải tách theo '\b' mới thấy % live.
+                if (c == '\r' || c == '\n' || c == '\b') {
+                    String chunk = cur.toString();
+                    // v1.1-m3: với -bb1, 7zz in "+ <đường dẫn>" mỗi khi bắt đầu
+                    // nén 1 file -> hiện tên file đang nén lên dialog.
+                    boolean isFile = chunk.startsWith("+ ") && chunk.length() > 2;
+                    if (isFile) {
+                        currentFile = chunk.substring(2).trim();
                     }
+                    int pct = parsePct(chunk, lastPct);
+                    if (pct >= 0 && pct != lastPct) {
+                        lastPct = pct;
+                        progress(cb, pct, groupIndex, groupCount, currentFile);
+                    } else if (isFile && lastPct >= 0) {
+                        // Tên file đổi nhưng % chưa kịp đổi -> cập nhật tên ngay.
+                        progress(cb, lastPct, groupIndex, groupCount, currentFile);
+                    }
+                    cur.setLength(0);
+                } else {
+                    cur.append(c);
+                    if (cur.length() > 256) cur.delete(0, cur.length() - 256);
                 }
             }
             // Đoạn cuối chưa có \r
