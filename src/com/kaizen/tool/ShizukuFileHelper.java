@@ -23,6 +23,15 @@ public class ShizukuFileHelper {
 
     /**
      * Chạy lệnh shell qua Shizuku và trả về output.
+     *
+     * v1.1-m3 fix: phân biệt thành công/thất bại bằng EXIT CODE, không phải
+     * bằng "output có rỗng không". Các lệnh như rm/mkdir/touch/cp/mv khi
+     * thành công thì stdout RỖNG là bình thường — trước đây bị nhầm thành
+     * "ERROR: empty output" (false positive, vd: toast lỗi khi xóa file
+     * qua Shizuku dù file đã xóa thành công).
+     *
+     * Quy ước: chuỗi bắt đầu bằng "ERROR:" = thất bại (sLastError-safe);
+     * ngược lại = stdout nguyên xi (kể cả rỗng = thành công).
      */
     public static String runCommand(String... cmd) {
         if (!ShizukuHelper.isRunning()) {
@@ -47,15 +56,39 @@ public class ShizukuFileHelper {
                 sb.append(line).append('\n');
             }
             br.close();
-            proc.waitFor();
-            String result = sb.toString();
-            return result.isEmpty() ? "ERROR: empty output" : result;
+            int exitCode = proc.waitFor();
+            if (exitCode != 0) {
+                String stderr = readFully(proc.getErrorStream());
+                if (stderr.length() > 200) stderr = stderr.substring(0, 200);
+                String msg = "ERROR: exit " + exitCode;
+                String trimmed = stderr.trim();
+                if (!trimmed.isEmpty()) msg += ": " + trimmed;
+                return msg;
+            }
+            return sb.toString();
         } catch (Exception e) {
             return "ERROR: " + e.getClass().getSimpleName() + ": " + e.getMessage();
         } finally {
             if (proc != null) {
                 try { proc.destroy(); } catch (Exception ignored) {}
             }
+        }
+    }
+
+    /** Đọc toàn bộ stream thành String (null-safe). */
+    private static String readFully(InputStream is) {
+        if (is == null) return "";
+        try {
+            BufferedReader br = new BufferedReader(new InputStreamReader(is));
+            StringBuilder sb = new StringBuilder();
+            String line;
+            while ((line = br.readLine()) != null) {
+                sb.append(line).append('\n');
+            }
+            br.close();
+            return sb.toString();
+        } catch (Exception e) {
+            return "";
         }
     }
 

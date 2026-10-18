@@ -10,7 +10,7 @@ ANDROID_JAR="$SDK/platforms/android-34/android-34-ext12/android.jar"
 JDK="$SDK/jdk-17.0.20.1+1/bin"
 export PATH="$JDK:$BT:$PATH"
 
-APK_NAME="KaizenTool-v1.1-m1.apk"
+APK_NAME="KaizenTool-v1.1-m3.apk"
 KEYSTORE="$PROJ/kaizen.keystore"
 STOREPASS="kaizen123"
 # M3: Apache Commons Compress + deps (7z/tar support)
@@ -21,7 +21,7 @@ cd "$PROJ"
 rm -rf build && mkdir -p build/classes build/dex build/gen
 
 echo "==> [1/5] Packaging resources (aapt)..."
-aapt package -f -M AndroidManifest.xml -S res -I "$ANDROID_JAR" \
+aapt package -f -M AndroidManifest.xml -S res -A assets -I "$ANDROID_JAR" \
   -J build/gen -F build/unsigned.apk
 
 echo "==> [2/5] Compiling Java (javac)..."
@@ -39,6 +39,11 @@ d8 --lib "$ANDROID_JAR" --output build/dex/ \
   "$PROJ"/libs/commons-codec-1.15.jar
 cp build/dex/classes.dex build/
 (cd build && aapt add unsigned.apk classes.dex)
+# v1.1-m3: nhúng 7zz native vào lib/arm64-v8a/ để PackageManager bung ra
+# nativeLibraryDir với quyền exec đúng (chạy từ files/bin bị SELinux chặn).
+mkdir -p build/nativelib/lib/arm64-v8a
+cp "$PROJ/lib/arm64-v8a/lib7zz.so" build/nativelib/lib/arm64-v8a/
+(cd build/nativelib && aapt add ../unsigned.apk lib/arm64-v8a/lib7zz.so)
 
 echo "==> [4/5] Aligning (zipalign)..."
 zipalign -f 4 build/unsigned.apk build/aligned.apk

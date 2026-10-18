@@ -14,6 +14,18 @@ libs/*.jar
 # Large AI-generated artwork
 art/
 
+# Native 7zz build tree (NDK + 7-Zip source are huge; rebuild via
+# native7z/build-7zz-android.sh — only the final binary in assets/ is committed)
+native7z/android-ndk-r27d/
+native7z/ndk.zip
+native7z/7z-src.tar.xz
+native7z/7z-arm64.tar.xz
+native7z/CPP/
+native7z/C/
+native7z/Asm/
+native7z/DOC/
+!native7z/build-7zz-android.sh
+
 # IDE / OS
 .idea/
 *.iml

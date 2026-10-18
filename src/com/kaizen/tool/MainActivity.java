@@ -157,6 +157,8 @@ public class MainActivity extends Activity {
     // v1.1-m2: extract-pick mode — chọn thư mục đích giải nén qua FAB
     private File extractPickFile = null;
     private int extractPickKind = -1;
+    // v1.1-m3: null = giải nén cả archive; khác null = "Sao chép" các entry trong archive
+    private java.util.List<String> extractPickEntries = null;
 
     // M5: scroll history — vị trí cuộn của mỗi folder khi đi sâu vào,
     // để back ra thì restore đúng chỗ cũ.
@@ -1312,7 +1314,12 @@ public class MainActivity extends Activity {
                         }));
             }
         } else {
-            rows.add(new ContextMenuDialog.Item("Giải nén", R.drawable.ic_extract,
+            // v1.1-m3: menu trong archive kiểu ZArchiver: Thông tin / Sao chép / Đổi tên / Xóa
+            rows.add(new ContextMenuDialog.Item("Thông tin", R.drawable.ic_info,
+                    new ContextMenuDialog.OnAction() {
+                        @Override public void run() { showEntryInfo(item); }
+                    }));
+            rows.add(new ContextMenuDialog.Item("Sao chép", R.drawable.ic_copy,
                     new ContextMenuDialog.OnAction() {
                         @Override public void run() {
                             final File af = archiveFile;
@@ -1320,22 +1327,30 @@ public class MainActivity extends Activity {
                             final java.util.List<String> one =
                                     java.util.Collections.singletonList(
                                             archiveDir + item.name + (item.isDir ? "/" : ""));
-                            ArchiveDialogs.showExtractEntries(MainActivity.this, af, kind, one,
-                                    af.getParentFile(), new Runnable() {
-                                        @Override public void run() { loadDir(); }
-                                    });
+                            enterEntryCopyPickMode(af, kind, one, item.name);
+                        }
+                    }));
+            if (archiveKind == ArchiveUtils.KIND_ZIP || archiveKind == ArchiveUtils.KIND_7Z) {
+                rows.add(new ContextMenuDialog.Item("Đổi tên", R.drawable.ic_edit,
+                        new ContextMenuDialog.OnAction() {
+                            @Override public void run() { renameEntryInArchive(item); }
+                        }));
+                rows.add(new ContextMenuDialog.Item("Xóa", R.drawable.ic_delete,
+                        new ContextMenuDialog.OnAction() {
+                            @Override public void run() { deleteEntryInArchive(item); }
+                        }));
+            }
+        }
+        if (!inArchive) {
+            rows.add(new ContextMenuDialog.Item("Thuộc tính", R.drawable.ic_info,
+                    new ContextMenuDialog.OnAction() {
+                        @Override public void run() {
+                            Dialogs.showProperties(
+                                    MainActivity.this, item.file,
+                                    item.viaShizuku, item.isDir);
                         }
                     }));
         }
-        rows.add(new ContextMenuDialog.Item("Thuộc tính", R.drawable.ic_info,
-                new ContextMenuDialog.OnAction() {
-                    @Override public void run() {
-                        if (!inArchive) Dialogs.showProperties(
-                                MainActivity.this, item.file,
-                                item.viaShizuku, item.isDir);
-                        else toast(item.name);
-                    }
-                }));
         if (!inArchive) {
             rows.add(new ContextMenuDialog.Item("Chia sẻ", R.drawable.ic_share,
                     new ContextMenuDialog.OnAction() {
@@ -2485,9 +2500,27 @@ public class MainActivity extends Activity {
         if (isSearchOpen()) hideSearchBar();
         extractPickFile = archiveFile;
         extractPickKind = kind;
+        extractPickEntries = null; // cả archive
         updateFab();
         updateToolbar();
         toast("Chọn thư mục rồi bấm nút để giải nén \"" + archiveFile.getName() + "\"");
+    }
+
+    /**
+     * v1.1-m3: "Sao chép" entry trong archive kiểu ZArchiver — thoát archive,
+     * chọn thư mục đích bằng FAB (cơ chế giống hệt "Giải nén...").
+     */
+    private void enterEntryCopyPickMode(File af, int kind,
+                                        java.util.List<String> entries, String label) {
+        exitArchive();
+        exitPasteMode();
+        if (isSearchOpen()) hideSearchBar();
+        extractPickFile = af;
+        extractPickKind = kind;
+        extractPickEntries = entries;
+        updateFab();
+        updateToolbar();
+        toast("Chọn thư mục rồi bấm nút để sao chép \"" + label + "\"");
     }
 
     /** Hủy chế độ chọn thư mục giải nén. */
@@ -2495,6 +2528,7 @@ public class MainActivity extends Activity {
         if (extractPickFile == null) return;
         extractPickFile = null;
         extractPickKind = -1;
+        extractPickEntries = null;
         updateFab();
         updateToolbar();
     }
@@ -2504,12 +2538,35 @@ public class MainActivity extends Activity {
         if (!isExtractPickMode()) return;
         final File af = extractPickFile;
         final int kind = extractPickKind;
-        final File destDir = isRootMode() ? new File(rootDir != null ? rootDir : "/") : currentDir;
-        String dstName = destDir.getName().isEmpty()
-                ? destDir.getAbsolutePath() : destDir.getName();
+        final java.util.List<String> entries = extractPickEntries;
+        final File pickedDir = isRootMode() ? new File(rootDir != null ? rootDir : "/") : currentDir;
+        String dstName = pickedDir.getName().isEmpty()
+                ? pickedDir.getAbsolutePath() : pickedDir.getName();
+        if (entries != null) {
+            // v1.1-m3: "Sao chép" entry — bung thẳng các mục vào thư mục đã chọn.
+            final String label = entries.size() + " mục";
+            new CatBuilder(this, R.style.DialogTheme)
+                    .setTitle("Sao chép " + label)
+                    .setMessage("Sao chép vào \"" + dstName + "\"?")
+                    .setPositiveButton("Sao chép", new DialogInterface.OnClickListener() {
+                        @Override public void onClick(DialogInterface d, int which) {
+                            exitExtractPickMode();
+                            ArchiveDialogs.extractEntriesDirect(MainActivity.this, af, kind,
+                                    entries, pickedDir, new Runnable() {
+                                        @Override public void run() { loadDir(); }
+                                    });
+                        }
+                    })
+                    .setNegativeButton("Hủy", null)
+                    .show();
+            return;
+        }
+        // v1.1-m3 (fix theo yêu cầu): "Giải nén..." — bung vào folder cùng tên file nén.
+        final String base = ArchiveDialogs.stripExtension(af.getName());
+        final File destDir = new File(pickedDir, base);
         new CatBuilder(this, R.style.DialogTheme)
                 .setTitle("Giải nén \"" + af.getName() + "\"")
-                .setMessage("Giải nén vào \"" + dstName + "\"?")
+                .setMessage("Giải nén vào \"./" + base + "/\"?")
                 .setPositiveButton("Giải nén", new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int which) {
                         exitExtractPickMode();
@@ -2521,6 +2578,169 @@ public class MainActivity extends Activity {
                 })
                 .setNegativeButton("Hủy", null)
                 .show();
+    }
+
+    // -------------------------------------------------- v1.1-m3: Thông tin / Đổi tên / Xóa entry trong archive
+
+    /** Dialog "Thông tin" cho entry trong archive (kiểu ZArchiver). */
+    private void showEntryInfo(FileItem item) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("Tên: ").append(item.name).append("\n");
+        sb.append("Loại: ").append(item.isDir ? "Thư mục" : "Tệp").append("\n");
+        if (item.isDir) {
+            sb.append("Số mục: ").append(item.childCount).append("\n");
+        } else {
+            sb.append("Kích thước: ").append(FileOps.formatSize(item.size)).append("\n");
+        }
+        if (item.lastModified > 0) {
+            sb.append("Ngày sửa: ").append(FileOps.formatDate(item.lastModified));
+        }
+        new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("Thông tin")
+                .setMessage(sb.toString().trim())
+                .setPositiveButton("Đóng", null)
+                .show();
+    }
+
+    /** Đổi tên 1 entry trong archive (ZIP/7Z) qua 7zz rn. */
+    private void renameEntryInArchive(final FileItem item) {
+        final File af = archiveFile;
+        final int kind = archiveKind;
+        if (af == null) return;
+        final String oldEntry = archiveDir + item.name + (item.isDir ? "/" : "");
+
+        final EditText input = new EditText(this);
+        input.setText(item.name);
+        input.setSingleLine(true);
+        // Bôi đen phần tên trước đuôi mở rộng (giống Dialogs.showRename)
+        int dot = item.name.lastIndexOf('.');
+        int end = (!item.isDir && dot > 0) ? dot : item.name.length();
+        input.setSelection(0, end);
+        int p = (int) (16 * getResources().getDisplayMetrics().density);
+        LinearLayout layout = new LinearLayout(this);
+        layout.setOrientation(LinearLayout.VERTICAL);
+        layout.setPadding(p, (int) (p * 0.5f), p, (int) (p * 0.25f));
+        layout.addView(input,
+                new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                        LinearLayout.LayoutParams.WRAP_CONTENT));
+        new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("Đổi tên")
+                .setView(layout)
+                .setPositiveButton("Đổi tên", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int which) {
+                        String newName = input.getText().toString().trim();
+                        if (newName.isEmpty() || newName.contains("/")
+                                || newName.contains("\\")) {
+                            toast("Tên không hợp lệ");
+                            return;
+                        }
+                        if (newName.equals(item.name)) return;
+                        final String newEntry =
+                                archiveDir + newName + (item.isDir ? "/" : "");
+                        if (ArchiveUtils.needsPassword(af, kind)) {
+                            ArchiveDialogs.askPassword(MainActivity.this,
+                                    new ArchiveDialogs.PasswordListener() {
+                                        @Override public void onPassword(String pw) {
+                                            if (pw == null) return;
+                                            runRenameEntryOp(af, kind, oldEntry, newEntry, pw);
+                                        }
+                                    });
+                        } else {
+                            runRenameEntryOp(af, kind, oldEntry, newEntry, null);
+                        }
+                    }
+                })
+                .setNegativeButton("Hủy", null)
+                .show();
+    }
+
+    private void runRenameEntryOp(final File af, final int kind,
+                                  final String oldEntry, final String newEntry,
+                                  final String pw) {
+        final int fmt = kind == ArchiveUtils.KIND_7Z ? Native7z.FMT_7Z : Native7z.FMT_ZIP;
+        ArchiveDialogs.runOpWithProgress(this, "Đang đổi tên...",
+                new ArchiveDialogs.OpWithToken() {
+                    @Override public void start(FileOps.OpCallback cb, CancelToken token) {
+                        if (!Native7z.renameEntry(MainActivity.this, af, fmt,
+                                oldEntry, newEntry, pw, cb, token)) {
+                            cb.onDone(false, "Máy này chưa hỗ trợ đổi tên trong archive");
+                        }
+                    }
+                }, "Đã đổi tên xong", new Runnable() {
+                    @Override public void run() { loadDir(); }
+                });
+    }
+
+    /** Xóa 1 entry khỏi archive (ZIP/7Z) qua 7zz d. */
+    private void deleteEntryInArchive(final FileItem item) {
+        final File af = archiveFile;
+        final int kind = archiveKind;
+        if (af == null) return;
+        new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("Xóa")
+                .setMessage("Xóa \"" + item.name + "\" khỏi archive?")
+                .setPositiveButton("Xóa", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int which) {
+                        collectEntriesAndDelete(af, kind, item);
+                    }
+                })
+                .setNegativeButton("Hủy", null)
+                .show();
+    }
+
+    /** Gom entry (mở rộng thư mục thành toàn bộ entry con) rồi xóa. */
+    private void collectEntriesAndDelete(final File af, final int kind, final FileItem item) {
+        final String prefix = archiveDir;
+        final String entry = prefix + item.name + (item.isDir ? "/" : "");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final java.util.List<String> names = new java.util.ArrayList<String>();
+                if (item.isDir) {
+                    java.util.List<ArchiveEntryInfo> all =
+                            ArchiveUtils.listEntries(af, kind);
+                    for (ArchiveEntryInfo e : all) {
+                        if (e.name.startsWith(entry)) names.add(e.name);
+                    }
+                } else {
+                    names.add(entry);
+                }
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (names.isEmpty()) {
+                            toast("Không tìm thấy mục trong archive");
+                            return;
+                        }
+                        if (ArchiveUtils.needsPassword(af, kind)) {
+                            ArchiveDialogs.askPassword(MainActivity.this,
+                                    new ArchiveDialogs.PasswordListener() {
+                                        @Override public void onPassword(String pw) {
+                                            if (pw == null) return;
+                                            runDeleteEntriesOp(af, kind, names, pw);
+                                        }
+                                    });
+                        } else {
+                            runDeleteEntriesOp(af, kind, names, null);
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private void runDeleteEntriesOp(final File af, final int kind,
+                                    final java.util.List<String> entries, final String pw) {
+        final int fmt = kind == ArchiveUtils.KIND_7Z ? Native7z.FMT_7Z : Native7z.FMT_ZIP;
+        ArchiveDialogs.runOpWithProgress(this, "Đang xóa...",
+                new ArchiveDialogs.OpWithToken() {
+                    @Override public void start(FileOps.OpCallback cb, CancelToken token) {
+                        if (!Native7z.deleteEntries(MainActivity.this, af, fmt,
+                                entries, pw, cb, token)) {
+                            cb.onDone(false, "Máy này chưa hỗ trợ xóa trong archive");
+                        }
+                    }
+                }, "Đã xóa xong", new Runnable() {
+                    @Override public void run() { loadDir(); }
+                });
     }
 
     // -------------------------------------------------- v1.1-m2: compress-pick mode

@@ -28,9 +28,11 @@ public class ProgressNotification {
     private final NotificationManager manager;
     private final int id;
     private final Notification.Builder builder;
+    private final String baseTitle;
 
     private ProgressNotification(Context context, String title) {
         this.context = context.getApplicationContext();
+        this.baseTitle = title;
         this.manager = (NotificationManager) this.context
                 .getSystemService(Context.NOTIFICATION_SERVICE);
         this.id = ID_SEQ.incrementAndGet();
@@ -97,8 +99,11 @@ public class ProgressNotification {
         } else {
             builder.setProgress(0, 0, true);
         }
-        // % nằm bên phải (như thông báo thường), tên file ở giữa
+        // % nằm bên phải (như thông báo thường), tên file ở giữa.
+        // Một số máy (OriginOS...) không render setContentInfo -> nhét % vào
+        // tiêu đề cho chắc chắn hiển thị.
         builder.setContentInfo(pct + "%");
+        builder.setContentTitle(baseTitle + " " + pct + "%");
         builder.setContentText(fileName != null ? fileName : "");
         try {
             manager.notify(id, builder.build());

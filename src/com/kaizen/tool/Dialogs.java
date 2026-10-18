@@ -146,13 +146,29 @@ public class Dialogs {
         // v1.1-m1: checkbox "Vô hiệu hoá quét đa phương tiện" (.nomedia) như ZArchiver
         // -> ẩn ảnh/video trong thư mục khỏi Gallery
         if (isDirectory) {
-            final CheckBox nomediaBox = new CheckBox(a);
-            nomediaBox.setText("Vô hiệu hoá quét đa phương tiện");
-            nomediaBox.setTextColor(0xFF333333);
-            // v1.1-m2: căn chữ ngang hàng với ô vuông
-            nomediaBox.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            // v1.1-m3 fix: ĐỪNG dùng CheckBox có text (chữ bị lệch khỏi ô vuông
+            // trên một số máy) — thay bằng LinearLayout ngang: CheckBox trần
+            // (chỉ ô vuông) + TextView. Bấm vào chữ cũng toggle như bấm ô vuông.
+            LinearLayout nomediaRow = new LinearLayout(a);
+            nomediaRow.setOrientation(LinearLayout.HORIZONTAL);
+            nomediaRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
             int cp = dp(a, 8);
-            nomediaBox.setPadding(0, cp, 0, 0);
+            nomediaRow.setPadding(0, cp, 0, 0);
+
+            final CheckBox nomediaBox = new CheckBox(a);
+
+            TextView nomediaLabel = new TextView(a);
+            nomediaLabel.setText("Vô hiệu hoá quét đa phương tiện");
+            nomediaLabel.setTextColor(0xFF333333);
+            nomediaLabel.setGravity(android.view.Gravity.CENTER_VERTICAL);
+            nomediaLabel.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    nomediaBox.toggle();
+                }
+            });
+
+            nomediaRow.addView(nomediaBox);
+            nomediaRow.addView(nomediaLabel);
             final java.io.File nomediaFile = new java.io.File(f, ".nomedia");
             final boolean isShizukuPath =
                     ShizukuFileHelper.needsShizuku(f.getAbsolutePath());
@@ -213,7 +229,7 @@ public class Dialogs {
                     }
                 }
             });
-            layout.addView(nomediaBox);
+            layout.addView(nomediaRow);
         }
 
         new CatBuilder(a, R.style.DialogTheme)

@@ -231,13 +231,24 @@ public class ArchiveDialogs {
                                 ? new SplitDeleteCallback(a, cb, token, splitSize, deleteSrc, sources)
                                 : cb;
                         if (fmtFinal == FMT_7Z) {
-                            SevenZUtils.create7z(sources, dest, level, wrapped, token);
+                            // v1.1-m3: thử 7zz native (đa luồng, siêu nhanh) trước,
+                            // không được thì fallback sang Java.
+                            if (!Native7z.compress(a, Native7z.FMT_7Z, sources, dest,
+                                    level, pwFinal, wrapped, token)) {
+                                SevenZUtils.create7z(sources, dest, level, wrapped, token);
+                            }
                         } else if (fmtFinal == FMT_REM) {
                             RemArchive.createRem(sources, dest, level, pwFinal, wrapped, token);
                         } else if (pwFinal != null) {
-                            ZipUtils.createZipEncrypted(sources, dest, level, pwFinal, wrapped, token);
+                            if (!Native7z.compress(a, Native7z.FMT_ZIP, sources, dest,
+                                    level, pwFinal, wrapped, token)) {
+                                ZipUtils.createZipEncrypted(sources, dest, level, pwFinal, wrapped, token);
+                            }
                         } else {
-                            ZipUtils.createZip(sources, dest, level, wrapped, token);
+                            if (!Native7z.compress(a, Native7z.FMT_ZIP, sources, dest,
+                                    level, null, wrapped, token)) {
+                                ZipUtils.createZip(sources, dest, level, wrapped, token);
+                            }
                         }
                     }
                 }, "Đã nén xong: " + dest.getName(), onDone);
@@ -562,6 +573,39 @@ public class ArchiveDialogs {
                 }, defaultDestDir, "Đã giải nén xong", onDone);
     }
 
+    /**
+     * Giải nén các entry đã chọn THẲNG vào destDir (không hiện dialog nhập
+     * đường dẫn — dùng cho chế độ "Sao chép" chọn chỗ bằng FAB).
+     */
+    public static void extractEntriesDirect(final Activity a, final File archiveFile, final int kind,
+                                            final List<String> entryNames, final File destDir,
+                                            final Runnable onDone) {
+        if (a == null || archiveFile == null || entryNames == null || entryNames.isEmpty()
+                || destDir == null) return;
+        if (!destDir.exists() && !destDir.mkdirs()) {
+            Toast.makeText(a, "Không tạo được thư mục đích", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final ExtractConfig config = new ExtractConfig() {
+            @Override
+            public void run(final File d, final boolean overwrite, final String password,
+                            final FileOps.OpCallback cb, final CancelToken token) {
+                ArchiveUtils.extractEntries(archiveFile, kind, entryNames,
+                        d, overwrite, password, cb, token);
+            }
+        };
+        if (ArchiveUtils.needsPassword(archiveFile, kind)) {
+            askPassword(a, new PasswordListener() {
+                @Override public void onPassword(String pw) {
+                    if (pw == null) return; // user hủy
+                    startExtract(a, destDir, false, pw, config, "Đã sao chép xong", onDone);
+                }
+            });
+        } else {
+            startExtract(a, destDir, false, null, config, "Đã sao chép xong", onDone);
+        }
+    }
+
     // ------------------------------------------------------------------
     // Shared extract dialog + background op runner
     // ------------------------------------------------------------------
@@ -600,7 +644,26 @@ public class ArchiveDialogs {
         }, successMsg, onDone);
     }
 
-    private interface PasswordListener {
+    /**
+     * Chạy op archive với dialog tiến trình, op nhận được CancelToken
+     * (để hủy process native như 7zz rn/d).
+     */
+    public interface OpWithToken {
+        void start(FileOps.OpCallback cb, CancelToken token);
+    }
+
+    public static CancelToken runOpWithProgress(final Activity a, String progressTitle,
+                                               final OpWithToken op, final String successMsg,
+                                               final Runnable onDone) {
+        return runArchiveOp(a, progressTitle, new Op() {
+            @Override
+            public void start(FileOps.OpCallback cb, CancelToken token) {
+                op.start(cb, token);
+            }
+        }, successMsg, onDone);
+    }
+
+    interface PasswordListener {
         /** pw == null khi user bấm Hủy. */
         void onPassword(String pw);
     }
