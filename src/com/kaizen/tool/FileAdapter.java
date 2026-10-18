@@ -227,9 +227,20 @@ public class FileAdapter extends BaseAdapter {
         CheckBox check;
     }
 
+    /** v1.1-m2: bấm vào icon để chọn nhanh (không vào folder/mở file). */
+    public interface OnIconClickListener {
+        void onIconClick(FileItem item);
+    }
+
+    private OnIconClickListener iconClickListener;
+
+    public void setOnIconClickListener(OnIconClickListener l) {
+        this.iconClickListener = l;
+    }
+
     @Override
     public View getView(int position, View convertView, ViewGroup parent) {
-        FileItem item = items.get(visibleIdx.get(position));
+        final FileItem item = items.get(visibleIdx.get(position));
         if (gridMode) {
             return getGridView(item, convertView, parent);
         }
@@ -250,6 +261,12 @@ public class FileAdapter extends BaseAdapter {
         } else {
             holder = (ViewHolder) convertView.getTag();
         }
+        // v1.1-m2: bấm icon = chọn nhanh
+        holder.icon.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (iconClickListener != null) iconClickListener.onIconClick(item);
+            }
+        });
 
         // v1.1-m1: nếu là folder app (/Android/data), hiện icon app + tên app
         if (item.packageName != null) {
@@ -316,6 +333,13 @@ public class FileAdapter extends BaseAdapter {
         } else {
             h = (GridHolder) convertView.getTag();
         }
+        // v1.1-m2: bấm icon = chọn nhanh
+        final FileItem gridItem = item;
+        h.icon.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (iconClickListener != null) iconClickListener.onIconClick(gridItem);
+            }
+        });
         // v1.1-m1: nếu là folder app, hiện icon app
         if (item.packageName != null) {
             android.graphics.drawable.Drawable appIcon = getAppIcon(item.packageName);

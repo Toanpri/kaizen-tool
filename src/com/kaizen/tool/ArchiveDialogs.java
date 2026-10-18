@@ -468,6 +468,81 @@ public class ArchiveDialogs {
     }
 
     // ------------------------------------------------------------------
+    // v1.1-m2: giải nén trực tiếp (không dialog nhập đường dẫn) — kiểu ZArchiver
+    // ------------------------------------------------------------------
+
+    /**
+     * Giải nén thẳng vào destDir, không hỏi đường dẫn.
+     * overwrite=false, password=null (hỏi mật khẩu nếu archive mã hóa).
+     */
+    public static void extractDirect(final Activity a, final File archiveFile, final int kind,
+                                     final File destDir, final Runnable onDone) {
+        if (a == null || archiveFile == null || destDir == null) return;
+        if (!destDir.exists() && !destDir.mkdirs()) {
+            Toast.makeText(a, "Không tạo được thư mục đích", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        final ExtractConfig config = new ExtractConfig() {
+            @Override
+            public void run(final File d, final boolean overwrite, final String password,
+                            final FileOps.OpCallback cb, final CancelToken token) {
+                ArchiveUtils.extractAll(archiveFile, kind, d, overwrite, password, cb, token);
+            }
+        };
+        if (ArchiveUtils.needsPassword(archiveFile, kind)) {
+            askPassword(a, new PasswordListener() {
+                @Override public void onPassword(String pw) {
+                    if (pw == null) return; // user hủy
+                    startExtract(a, destDir, false, pw, config, "Đã giải nén xong", onDone);
+                }
+            });
+        } else {
+            startExtract(a, destDir, false, null, config, "Đã giải nén xong", onDone);
+        }
+    }
+
+    /**
+     * Dialog 3 lựa chọn giải nén kiểu ZArchiver:
+     * "Giải nén tại đây" / "Giải nén vào ./&lt;tên&gt;/" / "Giải nén...".
+     * @param onPickDest chạy khi user chọn "Giải nén..." (để host vào chế độ chọn thư mục)
+     */
+    public static void showExtractChoices(final Activity a, final File archiveFile, final int kind,
+                                          final File currentDir, final Runnable onPickDest,
+                                          final Runnable onDone) {
+        if (a == null || archiveFile == null) return;
+        final String base = stripExtension(archiveFile.getName());
+        final String[] items = new String[]{
+                "Giải nén tại đây",
+                "Giải nén vào ./ " + base + "/",
+                "Giải nén..."
+        };
+        new CatBuilder(a, R.style.DialogTheme)
+                .setTitle(archiveFile.getName())
+                .setItems(items, new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int which) {
+                        if (which == 0) {
+                            extractDirect(a, archiveFile, kind, currentDir, onDone);
+                        } else if (which == 1) {
+                            File sub = new File(currentDir, base);
+                            extractDirect(a, archiveFile, kind, sub, onDone);
+                        } else {
+                            if (onPickDest != null) onPickDest.run();
+                        }
+                    }
+                })
+                .setNegativeButton("Hủy", null)
+                .show();
+    }
+
+    /** "Gemini Translate.zip" -> "Gemini Translate" */
+    public static String stripExtension(String name) {
+        if (name == null) return "";
+        int dot = name.lastIndexOf('.');
+        // giữ nguyên nếu là file ẩn kiểu ".nomedia" (dot ở đầu)
+        return (dot > 0) ? name.substring(0, dot) : name;
+    }
+
+    // ------------------------------------------------------------------
     // Extract selected entries (archive browser mode)
     // ------------------------------------------------------------------
 

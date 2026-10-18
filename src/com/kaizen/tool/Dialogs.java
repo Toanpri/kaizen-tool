@@ -149,6 +149,8 @@ public class Dialogs {
             final CheckBox nomediaBox = new CheckBox(a);
             nomediaBox.setText("Vô hiệu hoá quét đa phương tiện");
             nomediaBox.setTextColor(0xFF333333);
+            // v1.1-m2: căn chữ ngang hàng với ô vuông
+            nomediaBox.setGravity(android.view.Gravity.CENTER_VERTICAL);
             int cp = dp(a, 8);
             nomediaBox.setPadding(0, cp, 0, 0);
             final java.io.File nomediaFile = new java.io.File(f, ".nomedia");

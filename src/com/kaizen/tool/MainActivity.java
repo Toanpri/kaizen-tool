@@ -152,6 +152,11 @@ public class MainActivity extends Activity {
     // M5: paste mode (FAB dán lơ lửng)
     private View fabPasteContainer;
     private TextView fabPasteBadge;
+    private android.widget.ImageButton fabPasteBtn; // v1.1-m2: đổi icon theo mode
+
+    // v1.1-m2: extract-pick mode — chọn thư mục đích giải nén qua FAB
+    private File extractPickFile = null;
+    private int extractPickKind = -1;
 
     // M5: scroll history — vị trí cuộn của mỗi folder khi đi sâu vào,
     // để back ra thì restore đúng chỗ cũ.
@@ -196,6 +201,14 @@ public class MainActivity extends Activity {
         }
 
         adapter = new FileAdapter(this, items);
+        // v1.1-m2: bấm vào icon = chọn nhanh (folder: chọn thay vì vào; file: chọn thay vì mở)
+        adapter.setOnIconClickListener(new FileAdapter.OnIconClickListener() {
+            @Override public void onIconClick(FileItem item) {
+                if (isRootMode()) return; // root: không chọn nhanh
+                if (!selectionMode) enterSelectionMode();
+                if (selectionMode) toggleSelected(item);
+            }
+        });
         listView.setAdapter(adapter);
         gridView = (GridView) findViewById(R.id.file_grid);
 
@@ -223,16 +236,41 @@ public class MainActivity extends Activity {
                             } : null,
                             new Runnable() {
                                 @Override public void run() {
-                                    ArchiveDialogs.showExtract(MainActivity.this, af, kind,
-                                            currentDir,
+                                    // v1.1-m2: 3 kiểu giải nén kiểu ZArchiver
+                                    ArchiveDialogs.showExtractChoices(MainActivity.this,
+                                            af, kind, currentDir,
+                                            new Runnable() {
+                                                @Override public void run() {
+                                                    enterExtractPickMode(af, kind);
+                                                }
+                                            },
                                             new Runnable() {
                                                 @Override public void run() { loadDir(); }
                                             });
                                 }
                             });
                 } else if (item.name.toLowerCase().endsWith(".apk")) {
-                    // M2: tap APK -> dialog cài đặt
-                    ApkDialogs.showInstall(MainActivity.this, item.file);
+                    // v1.1-m2: tap APK -> chọn Xem hoặc Cài đặt
+                    final FileItem apkItem = item;
+                    new CatBuilder(MainActivity.this, R.style.DialogTheme)
+                            .setTitle(item.name)
+                            .setPositiveButton("Cài đặt",
+                                    new DialogInterface.OnClickListener() {
+                                        @Override public void onClick(
+                                                DialogInterface d, int which) {
+                                            ApkDialogs.showInstall(
+                                                    MainActivity.this, apkItem.file);
+                                        }
+                                    })
+                            .setNeutralButton("Xem",
+                                    new DialogInterface.OnClickListener() {
+                                        @Override public void onClick(
+                                                DialogInterface d, int which) {
+                                            viewApk(apkItem);
+                                        }
+                                    })
+                            .setNegativeButton("Hủy", null)
+                            .show();
                 } else {
                     // Trình xem media trong app (ảnh/video/nhạc)
                     int mt = MediaHelper.mediaTypeOf(item.name);
@@ -268,8 +306,9 @@ public class MainActivity extends Activity {
         // M5: FAB dán (paste) lơ lửng
         fabPasteContainer = findViewById(R.id.fab_paste_container);
         fabPasteBadge = (TextView) findViewById(R.id.fab_paste_badge);
+        fabPasteBtn = (android.widget.ImageButton) findViewById(R.id.fab_paste);
         findViewById(R.id.fab_paste).setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View v) { paste(); }
+            @Override public void onClick(View v) { onFabClick(); }
         });
 
         currentDir = Environment.getExternalStorageDirectory();
@@ -319,7 +358,9 @@ public class MainActivity extends Activity {
 
         navBtn.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
-                if (isPasteMode()) {
+                if (isExtractPickMode()) {
+                    exitExtractPickMode(); // v1.1-m2: nút X = hủy chọn chỗ giải nén
+                } else if (isPasteMode()) {
                     exitPasteMode(); // M5: nút X = hủy dán
                 } else if (isAtRoot()) {
                     toggleDrawer();
@@ -405,8 +446,13 @@ public class MainActivity extends Activity {
         } else if (currentDir != null) {
             toolbarTitle.setText(currentDir.getAbsolutePath());
         }
-        navBtn.setImageResource(isPasteMode() ? R.drawable.ic_close
+        navBtn.setImageResource(isAnyPickMode() ? R.drawable.ic_close
                 : (isAtRoot() ? R.drawable.ic_hamburger : R.drawable.ic_back));
+    }
+
+    /** v1.1-m2: có mode FAB nào đang hoạt động (dán / chọn chỗ giải nén / chọn chỗ nén). */
+    private boolean isAnyPickMode() {
+        return isPasteMode() || isExtractPickMode();
     }
 
     private void toggleViewMode() {
@@ -804,7 +850,6 @@ public class MainActivity extends Activity {
                 @Override public void run() {
                     final java.io.File staging =
                             new java.io.File(getCacheDir(), "compress_staging");
-                    // Xóa staging cũ
                     deleteRecursive(staging);
                     staging.mkdirs();
                     final List<File> staged = new ArrayList<File>();
@@ -819,18 +864,15 @@ public class MainActivity extends Activity {
                         staged.add(new java.io.File(dstPath));
                     }
                     final boolean stagedOk = ok;
-                    final java.io.File destDir = staging;
                     runOnUiThread(new Runnable() {
                         @Override public void run() {
                             if (stagedOk && !staged.isEmpty()) {
-                                // Nén từ staging, output vào staging
-                                // (sau đó user tự di chuyển nếu cần)
                                 ArchiveDialogs.showCompress(MainActivity.this,
-                                        staged, destDir,
+                                        staged, staging,
                                         new Runnable() {
                                             @Override public void run() {
                                                 toast("Đã nén vào "
-                                                        + destDir.getAbsolutePath()
+                                                        + staging.getAbsolutePath()
                                                         + " — dùng Dán để di chuyển");
                                                 loadDir();
                                             }
@@ -1160,14 +1202,39 @@ public class MainActivity extends Activity {
             rows.add(new ContextMenuDialog.Item("Giải nén tại đây", R.drawable.ic_extract,
                     new ContextMenuDialog.OnAction() {
                         @Override public void run() {
-                            ArchiveDialogs.showExtract(MainActivity.this, item.file, kind,
+                            ArchiveDialogs.extractDirect(MainActivity.this, item.file, kind,
                                     currentDir, new Runnable() {
                                         @Override public void run() { loadDir(); }
                                     });
                         }
                     }));
+            // v1.1-m2: 2 kiểu giải nén còn lại kiểu ZArchiver
+            final String archBase = ArchiveDialogs.stripExtension(item.name);
+            rows.add(new ContextMenuDialog.Item("Giải nén vào ./ " + archBase + "/",
+                    R.drawable.ic_extract,
+                    new ContextMenuDialog.OnAction() {
+                        @Override public void run() {
+                            ArchiveDialogs.extractDirect(MainActivity.this, item.file, kind,
+                                    new File(currentDir, archBase), new Runnable() {
+                                        @Override public void run() { loadDir(); }
+                                    });
+                        }
+                    }));
+            rows.add(new ContextMenuDialog.Item("Giải nén...", R.drawable.ic_extract,
+                    new ContextMenuDialog.OnAction() {
+                        @Override public void run() {
+                            enterExtractPickMode(item.file, kind);
+                        }
+                    }));
         }
         if (!inArchive && item.name.toLowerCase().endsWith(".apk")) {
+            // v1.1-m2: xem nội dung APK như archive
+            rows.add(new ContextMenuDialog.Item("Xem", R.drawable.ic_open,
+                    new ContextMenuDialog.OnAction() {
+                        @Override public void run() {
+                            viewApk(item);
+                        }
+                    }));
             rows.add(new ContextMenuDialog.Item("Cài đặt", R.drawable.ic_file_apk,
                     new ContextMenuDialog.OnAction() {
                         @Override public void run() {
@@ -1611,9 +1678,34 @@ public class MainActivity extends Activity {
 
     // -------------------------------------------------- M2/M3: archive browse mode
 
+    /** v1.1-m2: xem nội dung APK như archive ZIP (copy ra cache nếu từ Shizuku). */
+    private void viewApk(final FileItem item) {
+        if (item.viaShizuku) {
+            new Thread(new Runnable() {
+                @Override public void run() {
+                    final java.io.File cached = ShizukuFileHelper.copyToCache(
+                            MainActivity.this, item.file.getAbsolutePath(), item.name);
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            if (cached != null && cached.exists()) {
+                                enterArchive(cached, ArchiveUtils.KIND_ZIP);
+                            } else {
+                                toast("Không đọc được APK: "
+                                        + ShizukuFileHelper.getLastError());
+                            }
+                        }
+                    });
+                }
+            }).start();
+        } else {
+            enterArchive(item.file, ArchiveUtils.KIND_ZIP);
+        }
+    }
+
     private void enterArchive(File af, int kind) {
         exitSelectionMode();
         if (isPasteMode()) exitPasteMode(); // M5: không dán được vào archive
+        exitExtractPickMode(); // v1.1-m2: không chọn đích giải nén trong archive
         if (isSearchOpen()) hideSearchBar();
         else adapter.setFilter(null);
         archiveFile = af;
@@ -2276,7 +2368,8 @@ public class MainActivity extends Activity {
 
     /** Vào chế độ dán: hiện FAB + nút nav thành X. */
     private void enterPasteMode() {
-        updatePasteFab();
+        exitExtractPickMode(); // v1.1-m2: các mode loại trừ nhau
+        updateFab();
         updateToolbar();
         int n = clipboard.size();
         toast(n + (clipboardCut ? " mục đã cắt" : " mục đã sao chép")
@@ -2287,17 +2380,37 @@ public class MainActivity extends Activity {
     private void exitPasteMode() {
         clipboard = null;
         clipboardCut = false;
-        updatePasteFab();
+        updateFab();
         updateToolbar();
     }
 
-    private void updatePasteFab() {
+    /** v1.1-m2: FAB hiện khi có mode nào hoạt động (dán / giải nén / nén). */
+    private void updateFab() {
         if (fabPasteContainer == null) return;
-        boolean show = isPasteMode();
+        boolean show = isAnyPickMode();
         fabPasteContainer.setVisibility(show ? View.VISIBLE : View.GONE);
         if (show && fabPasteBadge != null) {
-            int n = clipboard.size();
+            int n = isPasteMode() ? clipboard.size() : 1;
             fabPasteBadge.setText(n > 99 ? "99+" : String.valueOf(n));
+        }
+        // v1.1-m2: đổi icon FAB theo mode (không phải lúc nào cũng hình dán)
+        if (fabPasteBtn != null) {
+            if (isExtractPickMode()) {
+                fabPasteBtn.setImageResource(R.drawable.ic_extract);
+                fabPasteBtn.setContentDescription("Giải nén tại đây");
+            } else {
+                fabPasteBtn.setImageResource(R.drawable.ic_paste);
+                fabPasteBtn.setContentDescription("Dán");
+            }
+        }
+    }
+
+    /** v1.1-m2: bấm FAB — điều hướng theo mode đang hoạt động. */
+    private void onFabClick() {
+        if (isExtractPickMode()) {
+            confirmExtractPick();
+        } else {
+            paste();
         }
     }
 
@@ -2358,6 +2471,59 @@ public class MainActivity extends Activity {
             }
         });
     }
+
+    // -------------------------------------------------- v1.1-m2: extract-pick mode
+
+    /** Đang chọn thư mục đích để giải nén (qua FAB). */
+    private boolean isExtractPickMode() {
+        return extractPickFile != null;
+    }
+
+    /** Vào chế độ chọn thư mục giải nén: hiện FAB, nút nav thành X. */
+    private void enterExtractPickMode(File archiveFile, int kind) {
+        exitPasteMode();
+        if (isSearchOpen()) hideSearchBar();
+        extractPickFile = archiveFile;
+        extractPickKind = kind;
+        updateFab();
+        updateToolbar();
+        toast("Chọn thư mục rồi bấm nút để giải nén \"" + archiveFile.getName() + "\"");
+    }
+
+    /** Hủy chế độ chọn thư mục giải nén. */
+    private void exitExtractPickMode() {
+        if (extractPickFile == null) return;
+        extractPickFile = null;
+        extractPickKind = -1;
+        updateFab();
+        updateToolbar();
+    }
+
+    /** Bấm FAB khi đang chọn thư mục giải nén: xác nhận rồi giải nén tại đây. */
+    private void confirmExtractPick() {
+        if (!isExtractPickMode()) return;
+        final File af = extractPickFile;
+        final int kind = extractPickKind;
+        final File destDir = isRootMode() ? new File(rootDir != null ? rootDir : "/") : currentDir;
+        String dstName = destDir.getName().isEmpty()
+                ? destDir.getAbsolutePath() : destDir.getName();
+        new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("Giải nén \"" + af.getName() + "\"")
+                .setMessage("Giải nén vào \"" + dstName + "\"?")
+                .setPositiveButton("Giải nén", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int which) {
+                        exitExtractPickMode();
+                        ArchiveDialogs.extractDirect(MainActivity.this, af, kind,
+                                destDir, new Runnable() {
+                                    @Override public void run() { loadDir(); }
+                                });
+                    }
+                })
+                .setNegativeButton("Hủy", null)
+                .show();
+    }
+
+    // -------------------------------------------------- v1.1-m2: compress-pick mode
 
     /** v1.1-m1: copy/move qua Shizuku shell */
     private void pasteViaShizuku(final List<File> srcs, final File dst,
