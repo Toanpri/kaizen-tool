@@ -5,6 +5,8 @@ import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.Charset;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.List;
@@ -160,7 +162,7 @@ public class ZipUtils {
 
                     ZipFile zf = null;
                     try {
-                        zf = new ZipFile(zipFile);
+                        zf = openZip(zipFile);
                         Enumeration<? extends ZipEntry> en = zf.entries();
                         while (en.hasMoreElements()) {
                             if (cancelled(token)) {
@@ -245,7 +247,7 @@ public class ZipUtils {
 
                     ZipFile zf = null;
                     try {
-                        zf = new ZipFile(zipFile);
+                        zf = openZip(zipFile);
                         for (String name : entryNames) {
                             if (cancelled(token)) {
                                 firstError[0] = CANCELLED;
@@ -308,7 +310,7 @@ public class ZipUtils {
         if (zipFile == null || !zipFile.isFile()) return list;
         ZipFile zf = null;
         try {
-            zf = new ZipFile(zipFile);
+            zf = openZip(zipFile);
             Enumeration<? extends ZipEntry> en = zf.entries();
             while (en.hasMoreElements()) {
                 ZipEntry e = en.nextElement();
@@ -330,6 +332,31 @@ public class ZipUtils {
     // ------------------------------------------------------------------
     // Internals
     // ------------------------------------------------------------------
+
+    /**
+     * Mở ZipFile với charset đúng cho tên file.
+     * ZIP từ máy Tàu thường lưu tên bằng GBK mà không bật cờ UTF-8 ->
+     * đọc bằng UTF-8 sẽ ra "?" và ký tự lạ. Fix: thử UTF-8 trước,
+     * nếu tên nào có ký tự replacement (�) thì mở lại bằng GBK.
+     * (fix bug 19/10 theo báo cáo của Kazoi)
+     */
+    public static ZipFile openZip(File zipFile) throws java.io.IOException {
+        ZipFile zf = new ZipFile(zipFile, StandardCharsets.UTF_8);
+        try {
+            Enumeration<? extends ZipEntry> en = zf.entries();
+            while (en.hasMoreElements()) {
+                String name = en.nextElement().getName();
+                if (name != null && name.indexOf('�') >= 0) {
+                    try { zf.close(); } catch (Exception ignored) {}
+                    return new ZipFile(zipFile, Charset.forName("GBK"));
+                }
+            }
+        } catch (RuntimeException e) {
+            try { zf.close(); } catch (Exception ignored) {}
+            throw new java.io.IOException(e);
+        }
+        return zf;
+    }
 
     private static int clampLevel(int level) {
         if (level < 0) return 0;
@@ -457,7 +484,7 @@ public class ZipUtils {
         int count = 0;
         ZipFile zf = null;
         try {
-            zf = new ZipFile(zipFile);
+            zf = openZip(zipFile);
             Enumeration<? extends ZipEntry> en = zf.entries();
             while (en.hasMoreElements()) {
                 en.nextElement();

@@ -232,9 +232,12 @@ public class MainActivity extends Activity {
                     final File af = item.file;
                     final int kind = ArchiveUtils.kindForName(item.name);
                     final boolean browsable = ArchiveUtils.isBrowsable(kind);
+                    final FileItem archItem = item;
                     ArchiveDialogs.showArchiveOptions(MainActivity.this, af, kind,
                             browsable ? new Runnable() {
-                                @Override public void run() { enterArchive(af, kind); }
+                                @Override public void run() {
+                                    openArchiveForBrowse(archItem, kind);
+                                }
                             } : null,
                             new Runnable() {
                                 @Override public void run() {
@@ -1729,6 +1732,33 @@ public class MainActivity extends Activity {
         loadDir();
     }
 
+    /**
+     * Mở archive để browse. Nếu file nằm ở Shizuku path (/Android/data...),
+     * copy ra cache trước vì không đọc trực tiếp được (fix bug 19/10).
+     */
+    private void openArchiveForBrowse(final FileItem item, final int kind) {
+        if (!item.viaShizuku) {
+            enterArchive(item.file, kind);
+            return;
+        }
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final java.io.File cached = ShizukuFileHelper.copyToCache(
+                        MainActivity.this, item.file.getAbsolutePath(), item.name);
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (cached != null && cached.exists()) {
+                            enterArchive(cached, kind);
+                        } else {
+                            toast("Không đọc được file nén: "
+                                    + ShizukuFileHelper.getLastError());
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
     private void exitArchive() {
         exitSelectionMode();
         if (isSearchOpen()) hideSearchBar();
@@ -1747,22 +1777,74 @@ public class MainActivity extends Activity {
     }
 
     /** Tap handler for entries while browsing inside an archive. */
-    private void onArchiveEntryClick(FileItem item) {
+    private void onArchiveEntryClick(final FileItem item) {
         if (item.isDir) {
             exitSelectionMode();
             archiveDir = archiveDir + item.name + "/";
             loadDir();
             return;
         }
+        // Tap file trong archive -> giải nén ra cache rồi mở bằng trình xem
+        // (fix bug 19/10: trước đây hiện dialog giải nén như ảnh Kazoi gửi).
         final File af = archiveFile;
         final int kind = archiveKind;
-        final java.util.List<String> one =
-                java.util.Collections.singletonList(archiveDir + item.name);
-        ArchiveDialogs.showExtractEntries(MainActivity.this, af, kind, one,
-                af.getParentFile(),
-                new Runnable() {
-                    @Override public void run() { loadDir(); }
+        final String entryName = archiveDir + item.name;
+        final String simpleName = item.name;
+        toast("Đang mở " + simpleName + "...");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                java.io.File outFile = null;
+                try {
+                    java.io.File cacheDir = new java.io.File(getCacheDir(), "archive_view");
+                    if (!cacheDir.exists()) cacheDir.mkdirs();
+                    // Dọn file xem cũ (>1 ngày) cho đỡ đầy cache
+                    try {
+                        long cutoff = System.currentTimeMillis() - 24L * 3600 * 1000;
+                        java.io.File[] olds = cacheDir.listFiles();
+                        if (olds != null) {
+                            for (java.io.File f : olds) {
+                                if (f.lastModified() < cutoff) deleteRecursive(f);
+                            }
+                        }
+                    } catch (Exception ignored) {}
+                    final java.util.List<String> one =
+                            java.util.Collections.singletonList(entryName);
+                    final java.util.concurrent.CountDownLatch latch =
+                            new java.util.concurrent.CountDownLatch(1);
+                    final boolean[] ok = new boolean[1];
+                    ArchiveUtils.extractEntries(af, kind, one, cacheDir, true,
+                            new FileOps.OpCallback() {
+                                @Override public void onProgress(int done, int total, String name) {}
+                                @Override public void onDone(boolean ok2, String err) {
+                                    ok[0] = ok2;
+                                    latch.countDown();
+                                }
+                            }, new CancelToken());
+                    latch.await();
+                    if (ok[0]) {
+                        java.io.File cand = new java.io.File(cacheDir, entryName);
+                        if (cand.exists()) outFile = cand;
+                    }
+                } catch (Exception e) {
+                    outFile = null;
+                }
+                final java.io.File out = outFile;
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (out != null && out.exists()) {
+                            int mt = MediaHelper.mediaTypeOf(simpleName);
+                            if (mt >= 0) {
+                                openMediaViewer(out, mt);
+                            } else {
+                                openFile(out);
+                            }
+                        } else {
+                            toast("Không mở được file trong archive");
+                        }
+                    }
                 });
+            }
+        }).start();
     }
 
     /** Extract the currently selected archive entries (files and/or folders). */
