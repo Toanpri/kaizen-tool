@@ -179,6 +179,7 @@ public class MainActivity extends Activity {
         setTheme(R.style.AppTheme);
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        ZipUtils.init(this); // 20/10: cho native fallback khi ZIP dùng method lạ (XZ=95...)
 
         listView = (ListView) findViewById(R.id.file_list);
         emptyView = (TextView) findViewById(R.id.empty_view);

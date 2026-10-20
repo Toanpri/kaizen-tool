@@ -28,6 +28,38 @@ public class ZipUtils {
     public static final int LEVEL_NORMAL = 6;
     public static final int LEVEL_MAX = 9;
 
+    // ------------------------------------------------------------------
+    // Native fallback (fix bug 20/10: ZIP dùng compression method lạ
+    // như XZ=95 mà java.util.zip không đọc được).
+    // MainActivity.onCreate() gọi init() 1 lần; các hàm list/extract
+    // thử Java trước, throw -> fallback sang 7zz native.
+    // ------------------------------------------------------------------
+    private static android.content.Context sAppCtx;
+
+    /** Gọi 1 lần khi app khởi động. */
+    public static void init(android.content.Context ctx) {
+        if (ctx != null) {
+            try {
+                sAppCtx = ctx.getApplicationContext();
+            } catch (Exception ignored) {
+                sAppCtx = ctx;
+            }
+        }
+    }
+
+    /** Java có mở được zip này không? (probe nhanh, không throw) */
+    private static boolean javaCanOpen(File zipFile) {
+        ZipFile zf = null;
+        try {
+            zf = openZip(zipFile);
+            return true;
+        } catch (Exception e) {
+            return false;
+        } finally {
+            closeQuietly(zf);
+        }
+    }
+
     private static final int BUFFER_SIZE = 65536; // 64KB: giảm syscall
 
     /** Reported as the failure message when the user cancels the operation. */
@@ -155,6 +187,15 @@ public class ZipUtils {
                         return;
                     }
 
+                    // Fallback 20/10: Java không mở được zip này
+                    // (compression method lạ như XZ=95) -> 7zz native.
+                    if (!javaCanOpen(zipFile)) {
+                        String nerr = Native7z.extractZipSync(sAppCtx, zipFile,
+                                null, destDir, overwrite, cb, token);
+                        done(cb, nerr == null, nerr);
+                        return;
+                    }
+
                     final String destCanon = destDir.getCanonicalPath() + File.separator;
                     final int total = countZipEntries(zipFile);
                     final int[] done = new int[1];
@@ -240,6 +281,15 @@ public class ZipUtils {
                         return;
                     }
 
+                    // Fallback 20/10: Java không mở được zip này
+                    // (compression method lạ như XZ=95) -> 7zz native.
+                    if (!javaCanOpen(zipFile)) {
+                        String nerr = Native7z.extractZipSync(sAppCtx, zipFile,
+                                entryNames, destDir, overwrite, cb, token);
+                        done(cb, nerr == null, nerr);
+                        return;
+                    }
+
                     final String destCanon = destDir.getCanonicalPath() + File.separator;
                     final int total = entryNames.size();
                     final int[] done = new int[1];
@@ -321,7 +371,13 @@ public class ZipUtils {
                 info.time = e.getTime();
                 list.add(info);
             }
-        } catch (Exception ignored) {
+        } catch (Exception e) {
+            // Fallback 20/10: zip dùng compression method lạ (vd XZ=95)
+            // -> java.util.zip throw, dùng 7zz native đọc thay.
+            if (sAppCtx != null) {
+                List<ZipEntryInfo> nl = Native7z.listZipEntries(sAppCtx, zipFile);
+                if (nl != null) return nl;
+            }
             return new ArrayList<ZipEntryInfo>();
         } finally {
             closeQuietly(zf);

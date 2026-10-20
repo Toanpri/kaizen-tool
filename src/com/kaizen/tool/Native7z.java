@@ -552,4 +552,169 @@ public class Native7z {
             return false;
         }
     }
+
+    // ------------------------------------------------------------------
+    // Fallback: ZIP mà java.util.zip không đọc được (fix bug 20/10).
+    //
+    // Ví dụ: ZIP nén bằng XZ (compression method 95) -> ZipFile throw
+    // "invalid CEN header (bad compression method: 95)", app khác
+    // (ZArchiver) mở được vì dùng 7-Zip native. Ta fallback sang 7zz
+    // của mình cho cả list lẫn extract.
+    // ------------------------------------------------------------------
+
+    /**
+     * List entries của ZIP bằng 7zz (đồng bộ — caller tự chạy trên
+     * background thread). Trả về null nếu native không khả dụng hoặc
+     * 7zz báo lỗi (để caller quyết định tiếp).
+     */
+    public static java.util.List<ZipUtils.ZipEntryInfo> listZipEntries(
+            Context ctx, File zipFile) {
+        File binary = ensureBinary(ctx);
+        if (binary == null || zipFile == null || !zipFile.isFile()) return null;
+        List<String> cmd = new ArrayList<String>();
+        cmd.add(binary.getAbsolutePath());
+        cmd.add("l");
+        cmd.add("-slt");
+        cmd.add("-scsUTF-8");
+        cmd.add("-bso1");
+        cmd.add("-bse2");
+        cmd.add(zipFile.getAbsolutePath());
+        File workDir = zipFile.getParentFile();
+        if (workDir == null) workDir = new File(".");
+        String out = runCapture(cmd, workDir);
+        if (out == null) return null;
+        return parseSltList(out);
+    }
+
+    /**
+     * Giải nén ZIP bằng 7zz (đồng bộ — caller tự chạy trên background
+     * thread). entryNames null/rỗng = bung toàn bộ.
+     * @return null nếu thành công, ngược lại là message lỗi.
+     */
+    public static String extractZipSync(Context ctx, File zipFile,
+            List<String> entryNames, File destDir, boolean overwrite,
+            FileOps.OpCallback cb, CancelToken token) {
+        File binary = ensureBinary(ctx);
+        if (binary == null) return "7zz native không khả dụng";
+        try {
+            if (!destDir.exists() && !destDir.mkdirs())
+                return "Không tạo được thư mục đích";
+            List<String> cmd = new ArrayList<String>();
+            cmd.add(binary.getAbsolutePath());
+            cmd.add("x");
+            cmd.add("-tzip");
+            cmd.add("-o" + destDir.getAbsolutePath());
+            cmd.add(overwrite ? "-aoa" : "-aou");
+            cmd.add("-y");
+            cmd.add("-bsp1");
+            cmd.add("-bso1");
+            cmd.add("-bb1");
+            cmd.add("-bse2");
+            cmd.add("-scsUTF-8");
+            cmd.add(zipFile.getAbsolutePath());
+            if (entryNames != null) {
+                for (String nm : entryNames) {
+                    if (nm != null && nm.length() > 0) cmd.add(nm);
+                }
+            }
+            File workDir = zipFile.getParentFile();
+            if (workDir == null) workDir = new File(".");
+            return runOnce(cmd, workDir, 0, 1, cb, token);
+        } catch (Exception e) {
+            return e.getMessage() != null ? e.getMessage() : e.toString();
+        }
+    }
+
+    /** Chạy lệnh và gom toàn bộ stdout (đồng bộ). null nếu exit != 0. */
+    private static String runCapture(List<String> cmd, File workDir) {
+        Process proc = null;
+        try {
+            proc = new ProcessBuilder(cmd).directory(workDir)
+                    .redirectErrorStream(true).start();
+            java.io.InputStreamReader reader =
+                    new java.io.InputStreamReader(proc.getInputStream(), "UTF-8");
+            StringBuilder sb = new StringBuilder();
+            char[] buf = new char[8192];
+            int n;
+            while ((n = reader.read(buf)) != -1) {
+                sb.append(buf, 0, n);
+                if (sb.length() > 4 * 1024 * 1024) break; // guard archive khủng
+            }
+            int exit = proc.waitFor();
+            String out = sb.toString();
+            if (exit != 0) return null;
+            if (out.contains("ERROR:") || out.contains("Can not open the file as archive"))
+                return null;
+            return out;
+        } catch (Exception e) {
+            return null;
+        } finally {
+            if (proc != null) try { proc.destroy(); } catch (Exception ignored) {}
+        }
+    }
+
+    /**
+     * Parse output của `7zz l -slt`. Mỗi entry là 1 block bắt đầu bằng
+     * "Path = ..."; block của chính archive có thêm dòng "Type = ..."
+     * nên loại được. QUAN TRỌNG (fix 20/10): 7-Zip chỉ in đúng 1 dòng
+     * "----------" sau phần archive props — các item cách nhau bằng
+     * DÒNG TRỐNG (xem List.cpp: PrintItemInfo kết thúc bằng MY_ENDL).
+     * Bản trước split theo "----------" nên gộp mọi file thành 1 entry.
+     */
+    private static java.util.List<ZipUtils.ZipEntryInfo> parseSltList(String out) {
+        java.util.List<ZipUtils.ZipEntryInfo> list =
+                new java.util.ArrayList<ZipUtils.ZipEntryInfo>();
+        String[] lines = out.split("\n");
+        String path = null, folder = null, sizeStr = null, modStr = null;
+        boolean hasType = false;
+        for (int i = 0; i <= lines.length; i++) {
+            String ln = (i < lines.length) ? lines[i].trim() : "";
+            boolean isSep = ln.isEmpty() || "----------".equals(ln);
+            boolean isNewPath = ln.startsWith("Path = ");
+            if ((isSep || (isNewPath && path != null)) && path != null) {
+                // flush block hiện tại
+                if (!hasType) {
+                    ZipUtils.ZipEntryInfo info = new ZipUtils.ZipEntryInfo();
+                    info.name = path;
+                    info.isDir = "+".equals(folder) || path.endsWith("/");
+                    try {
+                        info.size = Long.parseLong(sizeStr.trim());
+                    } catch (Exception e) {
+                        info.size = 0;
+                    }
+                    info.time = parseSltTime(modStr);
+                    list.add(info);
+                }
+                path = null; folder = null; sizeStr = null; modStr = null;
+                hasType = false;
+            }
+            if (isSep) continue;
+            if (isNewPath) {
+                path = ln.substring(7);
+            } else if (ln.startsWith("Folder = ")) {
+                folder = ln.substring(9).trim();
+            } else if (ln.startsWith("Size = ")) {
+                sizeStr = ln.substring(7).trim();
+            } else if (ln.startsWith("Modified = ")) {
+                modStr = ln.substring(11).trim();
+            } else if (ln.startsWith("Type = ")) {
+                hasType = true;
+            }
+        }
+        return list;
+    }
+
+    /** Parse "Modified = 2026-10-20 08:09:00" -> millis, lỗi thì 0. */
+    private static long parseSltTime(String s) {
+        if (s == null || s.length() < 10) return 0;
+        try {
+            java.text.SimpleDateFormat f =
+                    new java.text.SimpleDateFormat("yyyy-MM-dd HH:mm:ss",
+                            java.util.Locale.US);
+            java.util.Date d = f.parse(s.trim());
+            return d != null ? d.getTime() : 0;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
 }
