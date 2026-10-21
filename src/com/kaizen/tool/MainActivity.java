@@ -2941,8 +2941,13 @@ public class MainActivity extends Activity {
                 new Runnable() {
                     @Override
                     public void run() {
-                        clipboard = null;
-                        clipboardCut = false;
+                        // v1.1-m4 fix: KHÔNG quét clipboard ở đây. Handler này
+                        // dùng chung cho MỌI op (xóa/dán/...) — trước đây nó xóa
+                        // luôn clipboard đang chờ dán mỗi khi một op bất kỳ xong:
+                        // xóa 1 file xong là Dán còn hiện nút nhưng bấm không ăn
+                        // (clipboard đã null) và nút X trên toolbar biến mất.
+                        // Luồng dán tự dọn clipboard bằng exitPasteMode() trong
+                        // onComplete của riêng nó (doPaste/doPasteRoot).
                         loadDir(keepPos);
                         if (onComplete != null) {
                             onComplete.run();

@@ -130,7 +130,64 @@ public class ShizukuFileHelper {
                 Log.w(TAG, "parse failed for: " + line);
             }
         }
+        // v1.1-m4: đếm số mục THẬT cho các folder con (1 lệnh shell gộp)
+        applyChildCounts(result, countChildren(path));
         return result;
+    }
+
+    /**
+     * v1.1-m4: script đếm số mục con của MỌI folder con trong $1, in ra
+     * mỗi dòng "số<TAB>tên". Dùng chung cho cả ShizukuFileHelper và
+     * RootFileProvider. Đếm cả file ẩn (ls -A) cho khớp cách đếm của
+     * java.io.File.listFiles() ở đường liệt kê thường.
+     */
+    static final String CHILD_COUNT_SCRIPT =
+            "for e in \"$1\"/* \"$1\"/.[!.]*; do "
+            + "[ -d \"$e\" ] || continue; "
+            + "n=$(ls -1A \"$e\" 2>/dev/null | wc -l); "
+            + "printf '%s\\t%s\\n' \"$n\" \"${e##*/}\"; "
+            + "done";
+
+    /** Parse output của CHILD_COUNT_SCRIPT thành map tên -> số mục. */
+    static java.util.Map<String, Integer> parseCounts(String out) {
+        java.util.Map<String, Integer> map =
+                new java.util.HashMap<String, Integer>();
+        if (out == null) return map;
+        for (String line : out.split("\n")) {
+            int tab = line.indexOf('\t');
+            if (tab <= 0) continue;
+            try {
+                int n = Integer.parseInt(line.substring(0, tab).trim());
+                String name = line.substring(tab + 1).trim();
+                if (!name.isEmpty()) map.put(name, n);
+            } catch (NumberFormatException ignored) {}
+        }
+        return map;
+    }
+
+    /** Chạy CHILD_COUNT_SCRIPT cho parentPath qua Shizuku. */
+    private static java.util.Map<String, Integer> countChildren(String parentPath) {
+        String out = runCommand("sh", "-c", CHILD_COUNT_SCRIPT, "kz", parentPath);
+        if (out == null || out.startsWith("ERROR:")) return null;
+        return parseCounts(out);
+    }
+
+    /** Thay các FileItem folder bằng bản có childCount thật (nếu đếm được). */
+    static void applyChildCounts(List<FileItem> items,
+                                 java.util.Map<String, Integer> counts) {
+        if (items == null || counts == null || counts.isEmpty()) return;
+        for (int i = 0; i < items.size(); i++) {
+            FileItem it = items.get(i);
+            if (!it.isDir) continue;
+            Integer c = counts.get(it.name);
+            if (c == null) continue;
+            FileItem ni = new FileItem(it.file.getAbsolutePath(), it.name,
+                    true, 0, it.lastModified, c.intValue());
+            ni.viaShizuku = it.viaShizuku;
+            ni.packageName = it.packageName;
+            ni.appLabel = it.appLabel;
+            items.set(i, ni);
+        }
     }
 
     /**
@@ -138,18 +195,28 @@ public class ShizukuFileHelper {
      * Dòng mẫu: "-rw-r--r-- 1 root root 1234 2024-01-15 10:30 filename.txt"
      */
     private static FileItem parseLsLine(String line, String parentPath) {
-        // Hỗ trợ 2 format date của ls:
+        // Hỗ trợ 2 format date của ls (cùng layout với RootFileProvider):
         // - ISO: perms(0) links(1) owner(2) group(3) size(4) YYYY-MM-DD(5) HH:MM(6) name(7+)
-        // - Truyền thống: perms(0) links(1) owner(2) group(3) size(4) Mon(5) day(6) time(7) name(8+)
+        // - Truyền thống: perms(0) links(1) owner(2) group(3) size(4) Mon(5) day(6) HH:MM|YYYY(7) name(8+)
         String[] parts = line.split("\\s+");
         if (parts.length < 8) return null;
 
         String perms = parts[0];
         String name;
         String sizeStr = parts[4];
-        // Detect ISO date: parts[5] dạng YYYY-MM-DD
-        boolean isIso = parts[5].matches("\\d{4}-\\d{2}-\\d{2}");
-        int nameIdx = isIso ? 7 : 8;
+        String datePart;
+        String timePart;
+        int nameIdx;
+        if (parts.length >= 9 && parts[6].matches("\\d{1,2}")
+                && (parts[7].contains(":") || parts[7].matches("\\d{4}"))) {
+            datePart = parts[5] + " " + parts[6];
+            timePart = parts[7];
+            nameIdx = 8;
+        } else {
+            datePart = parts[5];
+            timePart = parts[6];
+            nameIdx = 7;
+        }
         if (parts.length <= nameIdx) return null;
         StringBuilder sb = new StringBuilder();
         for (int i = nameIdx; i < parts.length; i++) {
@@ -169,10 +236,17 @@ public class ShizukuFileHelper {
         long size = 0;
         try { size = Long.parseLong(sizeStr); } catch (Exception ignored) {}
 
+        // v1.1-m4 fix: TRƯỚC ĐÂY lastModified bị hardcode 0 (mọi file qua
+        // Shizuku đều hiện 01/01/1970) và childCount hardcode 0 (mọi folder
+        // đều hiện "Trống"). Giờ parse ngày thật bằng parser dùng chung với
+        // RootFileProvider; childCount = -1 (chưa rõ — ls của thư mục cha
+        // không cho biết, hiện "—" thay vì nói dối là trống).
+        long mtime = RootFileProvider.parseLsDate(datePart, timePart);
+
         java.io.File f = new java.io.File(parentPath, name);
         String fullPath = f.getAbsolutePath();
         // Dùng constructor virtual (không chạm filesystem thật)
-        return new FileItem(fullPath, name, isDir, size, 0, 0);
+        return new FileItem(fullPath, name, isDir, size, mtime, -1);
     }
 
     /**

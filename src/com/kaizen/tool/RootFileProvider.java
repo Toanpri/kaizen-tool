@@ -123,7 +123,16 @@ public class RootFileProvider {
             if (err.isEmpty()) err = "Không đọc được thư mục (exit " + r.exitCode + ")";
             throw new SecurityException(err);
         }
-        return parseLs(path, r.stdout);
+        List<FileItem> items = parseLs(path, r.stdout);
+        // v1.1-m4: đếm số mục THẬT cho các folder con (script dùng chung
+        // với ShizukuFileHelper) thay vì để childCount = -1 hiện "—" mãi.
+        RootShell.ShellResult cr = RootShell.execPreferred(new String[]{
+                "sh", "-c", ShizukuFileHelper.CHILD_COUNT_SCRIPT, "kz", path});
+        if (cr.ok()) {
+            ShizukuFileHelper.applyChildCounts(items,
+                    ShizukuFileHelper.parseCounts(cr.stdout));
+        }
+        return items;
     }
 
     /** Async listing with the result posted to the UI thread. */
