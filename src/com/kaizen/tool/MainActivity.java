@@ -1382,8 +1382,16 @@ public class MainActivity extends Activity {
             Intent it = new Intent(Intent.ACTION_SEND);
             if (files.size() == 1) {
                 File f = files.get(0);
-                it.setType(mimeOf(f));
-                it.putExtra(Intent.EXTRA_STREAM, GenericFileProvider.uriFor(f));
+                // Type "*/*" cho MỌI file (học từ ZArchiver): nếu set MIME thật
+                // (text/plain, text/html...) thì Messenger hiểu nhầm là share
+                // TEXT, không thấy EXTRA_TEXT là nó tự đóng -> bấm như không.
+                // "*/*" thì Messenger đi đường nhận file chung -> gửi được.
+                it.setType("*/*");
+                Uri uri = GenericFileProvider.uriFor(f);
+                it.putExtra(Intent.EXTRA_STREAM, uri);
+                // App nhận URI permission qua ClipData chứ không qua EXTRA_STREAM:
+                // không set là app đó bị từ chối khi mở stream -> "không chia sẻ được".
+                it.setClipData(android.content.ClipData.newRawUri("file", uri));
             } else {
                 it.setAction(Intent.ACTION_SEND_MULTIPLE);
                 it.setType("*/*");

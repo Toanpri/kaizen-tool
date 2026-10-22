@@ -288,7 +288,10 @@ public class ImageViewerActivity extends Activity {
         try {
             Intent it = new Intent(Intent.ACTION_SEND);
             it.setType("image/*");
-            it.putExtra(Intent.EXTRA_STREAM, GenericFileProvider.uriFor(current));
+            Uri uri = GenericFileProvider.uriFor(current);
+            it.putExtra(Intent.EXTRA_STREAM, uri);
+            // Như shareFiles: một số app chỉ nhận URI permission qua ClipData.
+            it.setClipData(android.content.ClipData.newRawUri("file", uri));
             it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
             startActivity(Intent.createChooser(it, "Chia sẻ"));
         } catch (Exception e) {
