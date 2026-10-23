@@ -2654,7 +2654,104 @@ public class MainActivity extends Activity {
 
     /** Thực hiện copy/cut sau khi user xác nhận. */
     private void doPaste(final int count) {
+        // v1.2-m1 (vá theo ý Kazoi): đích đã có mục trùng tên thì hỏi
+        // "Ghi đè không?" (Có/Hủy) trước khi dán — trước đây FileOps tự
+        // đổi tên (resolveUnique) còn Shizuku thì cp đè thầm, không hỏi.
+        resolvePasteOverwrite(count);
+    }
+
+    /** Kiểm tra trùng tên ở đích (thread nền vì có thể phải hỏi shell). */
+    private void resolvePasteOverwrite(final int count) {
+        final List<File> srcs = new ArrayList<File>(clipboard);
+        final File af = archiveFile;
+        final int kind = archiveKind;
+        final String prefix = archiveDir;
+        final boolean root = isRootMode();
+        final File dst = currentDir;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final List<String> conflicts = new ArrayList<String>();
+                try {
+                    if (af != null) {
+                        // Đích nằm trong archive: đối chiếu danh sách entry
+                        List<ArchiveEntryInfo> all = getArchiveEntries(af, kind);
+                        if (all != null) {
+                            for (File s : srcs) {
+                                String base = prefix + s.getName();
+                                for (ArchiveEntryInfo e : all) {
+                                    if (e.name.equals(base) || e.name.equals(base + "/")
+                                            || e.name.startsWith(base + "/")) {
+                                        conflicts.add(s.getName());
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    } else if (!root && dst != null) {
+                        boolean shizuku =
+                                ShizukuFileHelper.needsShizuku(dst.getAbsolutePath());
+                        for (File s : srcs) {
+                            File d = new File(dst, s.getName());
+                            // Dán ngay tại thư mục đang chứa nguồn (chính
+                            // nó) không tính là trùng — giữ hành vi cũ.
+                            if (samePath(s, d)) continue;
+                            if (d.exists() || (shizuku
+                                    && shellExists(d.getAbsolutePath()))) {
+                                conflicts.add(s.getName());
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {}
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (conflicts.isEmpty()) {
+                            doPasteChecked(count, false);
+                            return;
+                        }
+                        StringBuilder msg = new StringBuilder(
+                                "Thư mục đích đã có sẵn các mục trùng tên:");
+                        for (int i = 0; i < conflicts.size() && i < 5; i++) {
+                            msg.append("\n• ").append(conflicts.get(i));
+                        }
+                        if (conflicts.size() > 5) msg.append("\n• ...");
+                        msg.append("\n\nGhi đè lên các mục này?");
+                        new CatBuilder(MainActivity.this, R.style.DialogTheme)
+                                .setTitle("Mục đã tồn tại")
+                                .setMessage(msg.toString())
+                                .setPositiveButton("Có", new DialogInterface.OnClickListener() {
+                                    @Override public void onClick(DialogInterface d, int w) {
+                                        doPasteChecked(count, true);
+                                    }
+                                })
+                                .setNegativeButton("Hủy", null)
+                                .show();
+                    }
+                });
+            }
+        }).start();
+    }
+
+    private static boolean samePath(File a, File b) {
+        try {
+            return a.getCanonicalPath().equals(b.getCanonicalPath());
+        } catch (Exception e) {
+            return a.getAbsolutePath().equals(b.getAbsolutePath());
+        }
+    }
+
+    private static boolean shellExists(String path) {
+        try {
+            String r = ShizukuFileHelper.runCommand("ls", "-d", path);
+            return r != null && !r.startsWith("ERROR");
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Dán thật sau khi đã qua cổng hỏi ghi đè. */
+    private void doPasteChecked(final int count, final boolean overwrite) {
         if (archiveFile != null) {
+            // 7zz a tự thay thế entry trùng tên trong archive.
             doPasteIntoArchive(count);
             return;
         }
@@ -2673,11 +2770,21 @@ public class MainActivity extends Activity {
                 // v1.1-m1: nếu src hoặc dst cần Shizuku -> dùng shell
                 if (needsShizukuOp(srcs)
                         || ShizukuFileHelper.needsShizuku(dst.getAbsolutePath())) {
-                    pasteViaShizuku(srcs, dst, cut, cb);
-                } else if (cut) {
-                    FileOps.moveFiles(srcs, dst, cb);
+                    pasteViaShizuku(srcs, dst, cut, overwrite, cb);
                 } else {
-                    FileOps.copyFiles(srcs, dst, cb);
+                    if (overwrite) {
+                        // User đã chọn "Có": xóa bản cũ ở đích trước để
+                        // FileOps không tự đổi tên (resolveUnique) nữa.
+                        for (File s : srcs) {
+                            File d = new File(dst, s.getName());
+                            if (d.exists() && !samePath(s, d)) deleteRecursive(d);
+                        }
+                    }
+                    if (cut) {
+                        FileOps.moveFiles(srcs, dst, cb);
+                    } else {
+                        FileOps.copyFiles(srcs, dst, cb);
+                    }
                 }
             }
         }, new Runnable() {
@@ -3044,7 +3151,8 @@ public class MainActivity extends Activity {
 
     /** v1.1-m1: copy/move qua Shizuku shell */
     private void pasteViaShizuku(final List<File> srcs, final File dst,
-                                final boolean cut, final FileOps.OpCallback cb) {
+                                final boolean cut, final boolean overwrite,
+                                final FileOps.OpCallback cb) {
         new Thread(new Runnable() {
             @Override public void run() {
                 final android.os.Handler ui =
@@ -3061,6 +3169,11 @@ public class MainActivity extends Activity {
                 for (File src : srcs) {
                     String srcPath = src.getAbsolutePath();
                     String dstFile = dstPath + "/" + src.getName();
+                    if (overwrite) {
+                        // User đã chọn ghi đè: xóa bản cũ ở đích trước,
+                        // tránh cp/mv lồng thêm tầng vào thư mục có sẵn.
+                        ShizukuFileHelper.delete(dstFile);
+                    }
                     boolean ok = cut
                             ? ShizukuFileHelper.move(srcPath, dstFile)
                             : ShizukuFileHelper.copy(srcPath, dstFile);
