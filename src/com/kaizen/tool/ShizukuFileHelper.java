@@ -97,7 +97,19 @@ public class ShizukuFileHelper {
      * Trả về list FileItem, hoặc null nếu thất bại.
      */
     public static List<FileItem> listFiles(String path) {
-        String output = runCommand("ls", "-la", path);
+        // v1.2-m1: thử lại tối đa 3 lần khi ls lỗi. Lỗi kiểu "Transport
+        // endpoint is not connected" (Shizuku/FUSE chập chờn, hay gặp
+        // ngay sau thao tác nặng như dán file lớn) thường tự hết sau
+        // vài trăm ms — trước đây lỗi 1 lần là danh sách trắng luôn,
+        // trông như thư mục bị xóa sạch.
+        String output = null;
+        for (int attempt = 0; attempt < 3; attempt++) {
+            output = runCommand("ls", "-la", path);
+            if (output != null && !output.startsWith("ERROR:")) break;
+            if (attempt < 2) {
+                try { Thread.sleep(400); } catch (InterruptedException ignored) {}
+            }
+        }
         if (output == null) {
             sLastError = "runCommand returned null";
             return null;

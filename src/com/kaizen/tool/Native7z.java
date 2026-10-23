@@ -125,6 +125,174 @@ public class Native7z {
     }
 
     // ------------------------------------------------------------------
+    // Add files into an existing archive (7zz a) — v1.1-m7: dán vào archive
+    // ------------------------------------------------------------------
+
+    /**
+     * Thêm file/thư mục vào archive ĐÃ CÓ, tại thư mục trong archive
+     * entryPrefix ("" = gốc; khác rỗng thì kết thúc bằng "/").
+     *
+     * Cách làm: chép sources vào thư mục staging trong cache theo đúng
+     * cấu trúc prefix, rồi chạy "7zz a" với cwd = staging -> entry đích
+     * khớp prefix. Entry trùng tên trong archive bị 7zz ghi đè (update) —
+     * đúng ngữ nghĩa "dán" của ZArchiver.
+     *
+     * KHÔNG dùng finish() của compress: op này tuyệt đối không được xóa
+     * archive của user khi lỗi/hủy (7zz tự ghi file tạm rồi mới thay thế).
+     *
+     * @return true nếu native đã nhận job, false nếu không khả dụng.
+     */
+    public static boolean addToArchive(final Context ctx, final File archiveFile, final int fmt,
+                                       final List<File> sources, final String entryPrefix,
+                                       final String password,
+                                       final FileOps.OpCallback cb, final CancelToken token) {
+        if (sources == null || sources.isEmpty() || archiveFile == null) return false;
+        for (File s : sources) {
+            if (s == null || !s.exists()) return false;
+        }
+        final File binary = ensureBinary(ctx);
+        if (binary == null) return false;
+        new Thread(new Runnable() {
+            @Override public void run() {
+                File staging = new File(ctx.getCacheDir(),
+                        "kaizen-add-" + System.currentTimeMillis());
+                try {
+                    // Chặn tự dán archive vào chính nó / vào thư mục chứa nó.
+                    for (File s : sources) {
+                        if (s.isDirectory() && isInside(archiveFile, s)) {
+                            finishSimple(cb, false,
+                                    "Không thể dán thư mục chứa chính archive vào archive");
+                            return;
+                        }
+                        try {
+                            if (s.getCanonicalPath().equals(archiveFile.getCanonicalPath())) {
+                                finishSimple(cb, false,
+                                        "Không thể tự dán archive vào chính nó");
+                                return;
+                            }
+                        } catch (Exception ignored) {}
+                    }
+                    File targetDir = (entryPrefix == null || entryPrefix.isEmpty())
+                            ? staging : new File(staging, entryPrefix);
+                    if (!targetDir.exists() && !targetDir.mkdirs()) {
+                        finishSimple(cb, false, "Không tạo được thư mục tạm");
+                        return;
+                    }
+                    int done = 0;
+                    for (File s : sources) {
+                        if (cancelled(token)) {
+                            finishSimple(cb, false, "Đã hủy");
+                            return;
+                        }
+                        String copyErr = copyRecursiveSync(s, new File(targetDir, s.getName()));
+                        if (copyErr != null) {
+                            finishSimple(cb, false, copyErr);
+                            return;
+                        }
+                        done++;
+                        if (cb != null) {
+                            try { cb.onProgress(done, sources.size(), s.getName()); }
+                            catch (Exception ignored) {}
+                        }
+                    }
+                    List<String> cmd = new ArrayList<String>();
+                    cmd.add(binary.getAbsolutePath());
+                    cmd.add("a");                       // add/update vào archive có sẵn
+                    cmd.add("-t" + (fmt == FMT_7Z ? "7z" : "zip"));
+                    cmd.add("-mx=" + mapLevel(fmt, 6));
+                    cmd.add("-mmt=on");
+                    cmd.add("-bsp1");
+                    cmd.add("-bso1");
+                    cmd.add("-bb1");
+                    cmd.add("-bse2");
+                    cmd.add("-scsUTF-8");
+                    if (password != null && password.length() > 0) {
+                        cmd.add("-p" + password);
+                        if (fmt == FMT_ZIP) cmd.add("-mem=AES256");
+                    }
+                    cmd.add("-y");
+                    cmd.add(archiveFile.getAbsolutePath());
+                    if (entryPrefix == null || entryPrefix.isEmpty()) {
+                        for (File s : sources) {
+                            String name = s.getName();
+                            // Tên bắt đầu bằng - hoặc @ sẽ bị 7zz hiểu nhầm là switch.
+                            if (name.startsWith("-") || name.startsWith("@")) name = "./" + name;
+                            cmd.add(name);
+                        }
+                    } else {
+                        // Thêm cả cây thư mục cấp 1 của prefix — phần con bên
+                        // trong (gồm thư mục đích) đi theo đệ quy.
+                        String first = entryPrefix;
+                        int slash = first.indexOf('/');
+                        if (slash >= 0) first = first.substring(0, slash);
+                        if (first.startsWith("-") || first.startsWith("@")) first = "./" + first;
+                        cmd.add(first);
+                    }
+                    String err = runOnce(cmd, staging, 0, 1, cb, token);
+                    if (err != null && err.startsWith("Nén thất bại: ")) {
+                        err = "Thêm vào archive thất bại: "
+                                + err.substring("Nén thất bại: ".length());
+                    }
+                    finishSimple(cb, err == null, err);
+                } catch (Exception e) {
+                    finishSimple(cb, false,
+                            e.getMessage() != null ? e.getMessage() : e.toString());
+                } finally {
+                    deleteRecursiveSync(staging);
+                }
+            }
+        }).start();
+        return true;
+    }
+
+    /** Chép đệ quy đồng bộ (cho staging dán vào archive). null = OK. */
+    private static String copyRecursiveSync(File src, File dst) {
+        try {
+            if (src.isDirectory()) {
+                if (!dst.exists() && !dst.mkdirs()) {
+                    return "Không tạo được thư mục tạm: " + src.getName();
+                }
+                File[] kids = src.listFiles();
+                if (kids != null) {
+                    for (File k : kids) {
+                        String err = copyRecursiveSync(k, new File(dst, k.getName()));
+                        if (err != null) return err;
+                    }
+                }
+                return null;
+            }
+            File parent = dst.getParentFile();
+            if (parent != null && !parent.exists()) parent.mkdirs();
+            InputStream in = new java.io.FileInputStream(src);
+            OutputStream out = new FileOutputStream(dst);
+            try {
+                byte[] buf = new byte[65536];
+                int n;
+                while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+            } finally {
+                try { in.close(); } catch (Exception ignored) {}
+                try { out.close(); } catch (Exception ignored) {}
+            }
+            return null;
+        } catch (Exception e) {
+            return "Lỗi chép file tạm: "
+                    + (e.getMessage() != null ? e.getMessage() : e.toString());
+        }
+    }
+
+    /** Xóa đệ quy đồng bộ (dọn staging). */
+    private static void deleteRecursiveSync(File f) {
+        if (f == null || !f.exists()) return;
+        if (f.isDirectory()) {
+            File[] kids = f.listFiles();
+            if (kids != null) {
+                for (File k : kids) deleteRecursiveSync(k);
+            }
+        }
+        try { f.delete(); } catch (Exception ignored) {}
+    }
+
+    // ------------------------------------------------------------------
     // Pre-flight: binary có sẵn sàng không?
     // ------------------------------------------------------------------
 
@@ -593,17 +761,27 @@ public class Native7z {
      */
     public static String extractZipSync(Context ctx, File zipFile,
             List<String> entryNames, File destDir, boolean overwrite,
+            String stripPrefix,
             FileOps.OpCallback cb, CancelToken token) {
         File binary = ensureBinary(ctx);
         if (binary == null) return "7zz native không khả dụng";
         try {
             if (!destDir.exists() && !destDir.mkdirs())
                 return "Không tạo được thư mục đích";
+            // v1.2-m1: cần bỏ tiền tố thư mục cha thì bung vào thư mục
+            // tạm nằm trong đích rồi dời nội dung lên, vì 7zz luôn giữ
+            // nguyên đường dẫn đầy đủ của entry.
+            final boolean useStrip = stripPrefix != null && !stripPrefix.isEmpty()
+                    && entryNames != null && !entryNames.isEmpty();
+            final File tmpDir = useStrip
+                    ? new File(destDir, ".kz-strip-" + System.currentTimeMillis())
+                    : null;
+            final File outRoot = useStrip ? tmpDir : destDir;
             List<String> cmd = new ArrayList<String>();
             cmd.add(binary.getAbsolutePath());
             cmd.add("x");
             cmd.add("-tzip");
-            cmd.add("-o" + destDir.getAbsolutePath());
+            cmd.add("-o" + outRoot.getAbsolutePath());
             cmd.add(overwrite ? "-aoa" : "-aou");
             cmd.add("-y");
             cmd.add("-bsp1");
@@ -619,10 +797,60 @@ public class Native7z {
             }
             File workDir = zipFile.getParentFile();
             if (workDir == null) workDir = new File(".");
-            return runOnce(cmd, workDir, 0, 1, cb, token);
+            String r = runOnce(cmd, workDir, 0, 1, cb, token);
+            if (r != null) {
+                if (tmpDir != null) deleteRecursiveSync(tmpDir);
+                return r;
+            }
+            if (useStrip) {
+                File inner = new File(tmpDir, stripPrefix);
+                String merr = moveContentsUp(inner, destDir, overwrite);
+                deleteRecursiveSync(tmpDir);
+                return merr;
+            }
+            return null;
         } catch (Exception e) {
             return e.getMessage() != null ? e.getMessage() : e.toString();
         }
+    }
+
+    /** Dời toàn bộ nội dung của srcDir vào dstDir (gộp khi trùng tên). null = OK. */
+    private static String moveContentsUp(File srcDir, File dstDir, boolean overwrite) {
+        if (srcDir == null || !srcDir.isDirectory()) return null;
+        File[] kids = srcDir.listFiles();
+        if (kids == null) return null;
+        for (File k : kids) {
+            File target = new File(dstDir, k.getName());
+            if (k.isDirectory()) {
+                if (!target.exists() && !target.mkdirs()) {
+                    return "Không tạo được thư mục: " + target.getName();
+                }
+                String err = moveContentsUp(k, target, overwrite);
+                if (err != null) return err;
+            } else {
+                if (target.exists()) {
+                    if (!overwrite) continue;
+                    target.delete();
+                }
+                if (!k.renameTo(target)) {
+                    // Khác phân vùng (hiếm) -> chép dữ liệu rồi xóa nguồn
+                    try {
+                        java.io.FileInputStream in = new java.io.FileInputStream(k);
+                        java.io.FileOutputStream out =
+                                new java.io.FileOutputStream(target);
+                        byte[] buf = new byte[8192];
+                        int n;
+                        while ((n = in.read(buf)) != -1) out.write(buf, 0, n);
+                        out.close();
+                        in.close();
+                        k.delete();
+                    } catch (Exception e) {
+                        return e.getMessage() != null ? e.getMessage() : e.toString();
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     /** Chạy lệnh và gom toàn bộ stdout (đồng bộ). null nếu exit != 0. */

@@ -300,7 +300,7 @@ public class RemArchive {
     public static void extractRem(final File remFile, final File destDir, final boolean overwrite,
                                   final String password,
                                   final FileOps.OpCallback cb, final CancelToken token) {
-        extractInternal(remFile, null, destDir, overwrite, password, cb, token);
+        extractInternal(remFile, null, destDir, overwrite, password, "", cb, token);
     }
 
     // ------------------------------------------------------------------
@@ -314,7 +314,7 @@ public class RemArchive {
     public static void extractEntries(final File remFile, final List<String> entryNames,
                                       final File destDir, final boolean overwrite,
                                       final FileOps.OpCallback cb, final CancelToken token) {
-        extractEntries(remFile, entryNames, destDir, overwrite, null, cb, token);
+        extractEntries(remFile, entryNames, destDir, overwrite, null, "", cb, token);
     }
 
     /**
@@ -322,7 +322,7 @@ public class RemArchive {
      */
     public static void extractEntries(final File remFile, final List<String> entryNames,
                                       final File destDir, final boolean overwrite,
-                                      final String password,
+                                      final String password, final String stripPrefix,
                                       final FileOps.OpCallback cb, final CancelToken token) {
         Set<String> sel = new HashSet<String>();
         if (entryNames != null) {
@@ -330,7 +330,7 @@ public class RemArchive {
                 if (n != null) sel.add(stripTrailingSlash(n));
             }
         }
-        extractInternal(remFile, sel, destDir, overwrite, password, cb, token);
+        extractInternal(remFile, sel, destDir, overwrite, password, stripPrefix, cb, token);
     }
 
     // ------------------------------------------------------------------
@@ -374,7 +374,7 @@ public class RemArchive {
      */
     private static void extractInternal(final File remFile, final Set<String> filter,
                                         final File destDir, final boolean overwrite,
-                                        final String password,
+                                        final String password, final String stripPrefix,
                                         final FileOps.OpCallback cb, final CancelToken token) {
         new Thread(new Runnable() {
             @Override
@@ -406,13 +406,17 @@ public class RemArchive {
 
                         boolean wanted = filter == null || isWanted(h.name, filter);
                         boolean safe = isSafeName(h.name);
+                        // v1.2-m1: tên ở đích = tên entry đã bỏ tiền tố thư
+                        // mục cha của lựa chọn (xem ArchiveUtils.stripPrefix).
+                        String outName = ArchiveUtils.stripPrefix(h.name, stripPrefix);
+                        if (outName == null || outName.isEmpty()) outName = h.name;
                         if (!wanted || !safe) {
                             skipFully(dis, h.compSize, buf); // vẫn phải đọc qua để giữ vị trí stream
                         } else if (h.isDir) {
-                            new File(destDir, h.name).mkdirs();
+                            new File(destDir, outName).mkdirs();
                             extracted++;
                         } else {
-                            File target = new File(destDir, h.name);
+                            File target = new File(destDir, outName);
                             // isSafeName đã chặn "../" và đường dẫn tuyệt đối
                             // nên target luôn nằm trong destDir
                             target.getParentFile().mkdirs();

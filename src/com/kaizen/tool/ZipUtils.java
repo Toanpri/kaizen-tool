@@ -191,7 +191,7 @@ public class ZipUtils {
                     // (compression method lạ như XZ=95) -> 7zz native.
                     if (!javaCanOpen(zipFile)) {
                         String nerr = Native7z.extractZipSync(sAppCtx, zipFile,
-                                null, destDir, overwrite, cb, token);
+                                null, destDir, overwrite, "", cb, token);
                         done(cb, nerr == null, nerr);
                         return;
                     }
@@ -230,7 +230,15 @@ public class ZipUtils {
                                 continue;
                             }
 
-                            String err = extractOne(zf, e, out, overwrite, token);
+                            String err = extractOne(zf, e, out, overwrite, token,
+                                    new EntryProgress() {
+                                        @Override public void onBytes(String nm, long w, long sz) {
+                                            progress(cb, done[0] + 1, total,
+                                                    sz > 0 ? nm + " — " + FileOps.formatSize(w)
+                                                                    + "/" + FileOps.formatSize(sz)
+                                                           : nm + " — " + FileOps.formatSize(w));
+                                        }
+                                    });
                             if (err != null) {
                                 firstError[0] = err;
                                 break;
@@ -259,6 +267,7 @@ public class ZipUtils {
      */
     public static void extractEntries(final File zipFile, final List<String> entryNames,
                                       final File destDir, final boolean overwrite,
+                                      final String stripPrefix,
                                       final FileOps.OpCallback cb, final CancelToken token) {
         new Thread(new Runnable() {
             @Override
@@ -285,7 +294,7 @@ public class ZipUtils {
                     // (compression method lạ như XZ=95) -> 7zz native.
                     if (!javaCanOpen(zipFile)) {
                         String nerr = Native7z.extractZipSync(sAppCtx, zipFile,
-                                entryNames, destDir, overwrite, cb, token);
+                                entryNames, destDir, overwrite, stripPrefix, cb, token);
                         done(cb, nerr == null, nerr);
                         return;
                     }
@@ -310,7 +319,14 @@ public class ZipUtils {
                                 break;
                             }
 
-                            File out = new File(destDir, name);
+                            // v1.2-m1: đáp xuống đích theo tên đã bỏ tiền tố
+                            // thư mục cha (xem ArchiveUtils.stripPrefix).
+                            String outName = ArchiveUtils.stripPrefix(name, stripPrefix);
+                            if (outName == null || outName.isEmpty()) {
+                                done[0]++;
+                                continue;
+                            }
+                            File out = new File(destDir, outName);
                             String outCanon;
                             try {
                                 outCanon = out.getCanonicalPath();
@@ -324,7 +340,15 @@ public class ZipUtils {
                                 continue;
                             }
 
-                            String err = extractOne(zf, e, out, overwrite, token);
+                            String err = extractOne(zf, e, out, overwrite, token,
+                                    new EntryProgress() {
+                                        @Override public void onBytes(String nm, long w, long sz) {
+                                            progress(cb, done[0] + 1, total,
+                                                    sz > 0 ? nm + " — " + FileOps.formatSize(w)
+                                                                    + "/" + FileOps.formatSize(sz)
+                                                           : nm + " — " + FileOps.formatSize(w));
+                                        }
+                                    });
                             if (err != null) {
                                 firstError[0] = err;
                                 break;
@@ -490,8 +514,18 @@ public class ZipUtils {
     }
 
     /** Extract one entry. Returns null on success, error message on failure. */
+    /** Nhận tiến độ theo byte trong lúc giải nén 1 entry (cho file lớn). */
+    private interface EntryProgress {
+        void onBytes(String entryName, long written, long entrySize);
+    }
+
     private static String extractOne(ZipFile zf, ZipEntry e, File out, boolean overwrite,
                                      CancelToken token) {
+        return extractOne(zf, e, out, overwrite, token, null);
+    }
+
+    private static String extractOne(ZipFile zf, ZipEntry e, File out, boolean overwrite,
+                                     CancelToken token, EntryProgress ep) {
         try {
             if (e.isDirectory()) {
                 if (!out.exists() && !out.mkdirs()) {
@@ -516,13 +550,34 @@ public class ZipUtils {
                 byte[] buf = new byte[BUFFER_SIZE];
                 int n;
                 long sinceCheck = 0;
+                long written = 0;
+                long lastReport = 0;
+                final long declared = e.getSize();
+                // v1.2-m1: chốt chặn entry bất thường — ghi vượt xa kích
+                // thước đã khai báo (zip lỗi/dữ liệu giả) thì dừng ngay
+                // thay vì ghi cho đến khi đầy máy.
+                final long cap = declared < 0 ? Long.MAX_VALUE
+                        : declared + Math.max(67108864L, declared);
                 while ((n = in.read(buf)) != -1) {
                     os.write(buf, 0, n);
+                    written += n;
+                    if (written > cap) {
+                        return "Entry bất thường, đã dừng giải nén: " + e.getName();
+                    }
                     sinceCheck += n;
                     if (sinceCheck >= 65536) {
                         sinceCheck = 0;
                         if (cancelled(token)) return CANCELLED;
                     }
+                    // v1.2-m1: báo tiến độ theo byte mỗi ~1MB — file khổng
+                    // lồ không còn trông như "treo 0%" nữa.
+                    if (ep != null && written - lastReport >= 1048576) {
+                        lastReport = written;
+                        ep.onBytes(e.getName(), written, declared);
+                    }
+                }
+                if (ep != null && written > 0) {
+                    ep.onBytes(e.getName(), written, declared);
                 }
             } finally {
                 closeQuietly(in);

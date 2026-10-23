@@ -167,7 +167,7 @@ public class SevenZUtils {
                             }
                             String name = e.getName();
                             progress(cb, done[0] + 1, total, name);
-                            String err = extractCurrent(szf, e, destDir, destCanon, overwrite, token);
+                            String err = extractCurrent(szf, e, destDir, destCanon, overwrite, "", token);
                             if (err != null) {
                                 firstError[0] = err;
                                 break;
@@ -193,6 +193,7 @@ public class SevenZUtils {
     /** Extract only the named entries into destDir. Names are exact entry names. */
     public static void extractEntries(final File sevenZFile, final List<String> entryNames,
                                       final File destDir, final boolean overwrite,
+                                      final String stripPrefix,
                                       final FileOps.OpCallback cb, final CancelToken token) {
         new Thread(new Runnable() {
             @Override
@@ -225,7 +226,7 @@ public class SevenZUtils {
                             if (!wanted.contains(e.getName())) continue;
                             String name = e.getName();
                             progress(cb, done[0] + 1, total, name);
-                            String err = extractCurrent(szf, e, destDir, destCanon, overwrite, token);
+                            String err = extractCurrent(szf, e, destDir, destCanon, overwrite, stripPrefix, token);
                             if (err != null) {
                                 firstError[0] = err;
                                 break;
@@ -299,9 +300,10 @@ public class SevenZUtils {
      */
     private static String extractCurrent(SevenZFile szf, SevenZArchiveEntry e,
                                          File destDir, String destCanon, boolean overwrite,
-                                         CancelToken token) {
+                                         String stripPrefix, CancelToken token) {
         try {
-            String name = e.getName();
+            String name = ArchiveUtils.stripPrefix(e.getName(), stripPrefix);
+            if (name == null || name.isEmpty()) return null; // chính gốc đã chọn
             File out = new File(destDir, name);
             String outCanon;
             try {

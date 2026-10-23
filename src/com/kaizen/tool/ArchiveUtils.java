@@ -130,6 +130,22 @@ public class ArchiveUtils {
     public static void extractEntries(File archiveFile, int kind, List<String> entryNames,
                                       File destDir, boolean overwrite, String password,
                                       FileOps.OpCallback cb, CancelToken token) {
+        extractEntries(archiveFile, kind, entryNames, destDir, overwrite, password,
+                "", cb, token);
+    }
+
+    /**
+     * Extract entries + stripPrefix: bỏ tiền tố thư mục cha khỏi đường
+     * dẫn ra (vd strip "a/b/" biến entry "a/b/c/d" thành "c/d" ở đích).
+     * Dùng cho luồng "Sao chép"/giải nén các mục đã chọn trong archive:
+     * mục phải đáp xuống đích theo tên của chính nó, KHÔNG kéo theo cả
+     * đường dẫn đầy đủ từ gốc archive. Vá v1.2-m1 theo test của Kazoi
+     * (copy "b/c" mà ở đích mọc thêm nguyên "a/b/c" phía trước).
+     */
+    public static void extractEntries(File archiveFile, int kind, List<String> entryNames,
+                                      File destDir, boolean overwrite, String password,
+                                      String stripPrefix,
+                                      FileOps.OpCallback cb, CancelToken token) {
         // v1.1-m3 fix: nếu entry là thư mục (vd "Sao chép" folder trong archive),
         // phải bung kèm toàn bộ file con bên trong — nếu không chỉ tạo vỏ folder rỗng.
         List<String> expanded = expandDirEntries(archiveFile, kind, entryNames);
@@ -138,18 +154,45 @@ public class ArchiveUtils {
                 // TODO: extractEntries cho ZIP mã hóa — hiện tại giải nén toàn bộ
                 ZipUtils.extractZipEncrypted(archiveFile, destDir, overwrite, password, cb, token);
             } else {
-                ZipUtils.extractEntries(archiveFile, expanded, destDir, overwrite, cb, token);
+                ZipUtils.extractEntries(archiveFile, expanded, destDir, overwrite, stripPrefix, cb, token);
             }
         } else if (kind == KIND_7Z) {
-            SevenZUtils.extractEntries(archiveFile, expanded, destDir, overwrite, cb, token);
+            SevenZUtils.extractEntries(archiveFile, expanded, destDir, overwrite, stripPrefix, cb, token);
         } else if (kind == KIND_TAR) {
             TarUtils.extractEntries(archiveFile, isTarGzip(archiveFile),
-                    expanded, destDir, overwrite, cb, token);
+                    expanded, destDir, overwrite, stripPrefix, cb, token);
         } else if (kind == KIND_REM) {
-            RemArchive.extractEntries(archiveFile, expanded, destDir, overwrite, password, cb, token);
+            RemArchive.extractEntries(archiveFile, expanded, destDir, overwrite, password, stripPrefix, cb, token);
         } else if (cb != null) {
             cb.onDone(false, "Định dạng không hỗ trợ");
         }
+    }
+
+    /**
+     * Tiền tố thư mục cha chung của các entry đã chọn: chọn folder
+     * "a/b/c/" hay file "a/b/f.txt" đều cho "a/b/". Mọi entry phải cùng
+     * bắt đầu bằng tiền tố này; không thì trả "" (giữ nguyên đường dẫn).
+     */
+    public static String commonParentPrefix(List<String> entryNames) {
+        if (entryNames == null || entryNames.isEmpty()) return "";
+        String first = entryNames.get(0);
+        if (first == null) return "";
+        String s = first;
+        while (s.endsWith("/")) s = s.substring(0, s.length() - 1);
+        int i = s.lastIndexOf('/');
+        if (i < 0) return "";
+        String p = s.substring(0, i + 1);
+        for (String n : entryNames) {
+            if (n == null || !n.startsWith(p)) return "";
+        }
+        return p;
+    }
+
+    /** Bỏ prefix khỏi name nếu khớp (không khớp thì giữ nguyên). */
+    public static String stripPrefix(String name, String prefix) {
+        if (name == null) return null;
+        if (prefix == null || prefix.isEmpty()) return name;
+        return name.startsWith(prefix) ? name.substring(prefix.length()) : name;
     }
 
     /**

@@ -114,6 +114,17 @@ public class MainActivity extends Activity {
     private File archiveFile = null;
     private String archiveDir = "";
     private int archiveKind = ArchiveUtils.KIND_ZIP;
+    // v1.2-m1: thư mục (thường + root) vừa hiển thị thành công gần nhất.
+    // Khi tải lại mà đọc lỗi tạm thời (Shizuku chập chờn) thì giữ nguyên
+    // danh sách cũ thay vì làm trắng — tránh tưởng thư mục bị xóa sạch.
+    private File lastListedDir = null;
+    private String lastListedRootDir = null;
+    // v1.1-m7: cache danh sách entry của archive đang mở. Trước đây mỗi lần
+    // bấm vào 1 thư mục con là app đọc lại TOÀN BỘ archive (archive data
+    // game cả nghìn entry -> "load vào data lâu"). Key gồm path+size+mtime
+    // nên archive bị sửa (đổi tên/xóa/dán entry) là cache tự hết hạn.
+    private java.util.List<ArchiveEntryInfo> archiveEntriesCache = null;
+    private String archiveEntriesKey = null;
     private ListView listView;
     private GridView gridView;
     private TextView emptyView;
@@ -1768,7 +1779,9 @@ public class MainActivity extends Activity {
 
     private void enterArchive(File af, int kind) {
         exitSelectionMode();
-        if (isPasteMode()) exitPasteMode(); // M5: không dán được vào archive
+        // v1.1-m7: GIỮ clipboard khi vào archive — dán vào archive ZIP/7Z
+        // đã hỗ trợ. Trước đây vào archive là exitPasteMode() quét sạch
+        // clipboard nên copy/cắt ở ngoài xong vào trong là mất trắng.
         exitExtractPickMode(); // v1.1-m2: không chọn đích giải nén trong archive
         if (isSearchOpen()) hideSearchBar();
         else adapter.setFilter(null);
@@ -1811,7 +1824,31 @@ public class MainActivity extends Activity {
         else adapter.setFilter(null);
         archiveFile = null;
         archiveDir = "";
+        // v1.2-m1: GIỮ cache entry — mở lại đúng archive chưa đổi là vào
+        // ngay, không đọc lại từ đầu (key đã gồm size+mtime, file đổi là
+        // cache tự hết hạn).
         loadDir();
+    }
+
+    /**
+     * v1.1-m7: lấy danh sách entry của archive, dùng cache khi file chưa
+     * đổi (path + size + mtime + kind). Điều hướng trong archive sau lần
+     * mở đầu gần như tức thì thay vì đọc lại toàn bộ archive mỗi cấp.
+     */
+    private java.util.List<ArchiveEntryInfo> getArchiveEntries(File af, int kind) {
+        String key = af.getAbsolutePath() + "|" + af.length() + "|"
+                + af.lastModified() + "|" + kind;
+        synchronized (this) {
+            if (archiveEntriesCache != null && key.equals(archiveEntriesKey)) {
+                return archiveEntriesCache;
+            }
+        }
+        java.util.List<ArchiveEntryInfo> all = ArchiveUtils.listEntries(af, kind);
+        synchronized (this) {
+            archiveEntriesCache = all;
+            archiveEntriesKey = key;
+        }
+        return all;
     }
 
     /** "a/b/" -> "a/", "a/" -> "" */
@@ -1904,7 +1941,7 @@ public class MainActivity extends Activity {
         new Thread(new Runnable() {
             @Override public void run() {
                 final java.util.List<String> names = new java.util.ArrayList<String>();
-                java.util.List<ArchiveEntryInfo> all = ArchiveUtils.listEntries(af, kind);
+                java.util.List<ArchiveEntryInfo> all = getArchiveEntries(af, kind);
                 for (FileItem it : snapshot) {
                     if (!sel.contains(it.path())) continue;
                     String entry = prefix + it.name + (it.isDir ? "/" : "");
@@ -1946,13 +1983,16 @@ public class MainActivity extends Activity {
         final String prefix = archiveDir;
         new Thread(new Runnable() {
             @Override public void run() {
-                java.util.List<ArchiveEntryInfo> all = ArchiveUtils.listEntries(af, kind);
+                java.util.List<ArchiveEntryInfo> all = getArchiveEntries(af, kind);
                 java.util.Map<String, ArchiveEntryInfo> dirs =
                         new java.util.LinkedHashMap<String, ArchiveEntryInfo>();
                 java.util.List<ArchiveEntryInfo> files =
                         new java.util.ArrayList<ArchiveEntryInfo>();
-                java.util.Map<String, Integer> dirCounts =
-                        new java.util.HashMap<String, Integer>();
+                // v1.1-m7: đếm CON TRỰC TIẾP của mỗi thư mục (tập tên con
+                // duy nhất), KHÔNG đếm đệ quy cháu chắt như trước (thư mục
+                // có 1 thư mục con chứa 9 file từng hiện "10 mục" thay vì 1).
+                java.util.Map<String, java.util.Set<String>> dirChildren =
+                        new java.util.HashMap<String, java.util.Set<String>>();
                 for (ArchiveEntryInfo e : all) {
                     if (!e.name.startsWith(prefix)) continue;
                     String rest = e.name.substring(prefix.length());
@@ -1966,12 +2006,21 @@ public class MainActivity extends Activity {
                         }
                     } else if (slash == rest.length() - 1) {
                         String d = rest.substring(0, rest.length() - 1);
-                        if (!dirs.containsKey(d)) dirs.put(d, e);
+                        if (dirs.get(d) == null) dirs.put(d, e);
                     } else {
                         String d = rest.substring(0, slash);
                         if (!dirs.containsKey(d)) dirs.put(d, null);
-                        Integer c = dirCounts.get(d);
-                        dirCounts.put(d, c == null ? 1 : c + 1);
+                        String rem = rest.substring(slash + 1);
+                        int s2 = rem.indexOf('/');
+                        String child = s2 < 0 ? rem : rem.substring(0, s2);
+                        if (!child.isEmpty()) {
+                            java.util.Set<String> set = dirChildren.get(d);
+                            if (set == null) {
+                                set = new java.util.HashSet<String>();
+                                dirChildren.put(d, set);
+                            }
+                            set.add(child);
+                        }
                     }
                 }
                 final java.util.List<FileItem> fresh = new java.util.ArrayList<FileItem>();
@@ -1980,9 +2029,9 @@ public class MainActivity extends Activity {
                     if (!showHidden && seg.startsWith(".")) continue;
                     ArchiveEntryInfo info = en.getValue();
                     long t = info != null ? info.time : 0;
-                    Integer c = dirCounts.get(seg);
+                    java.util.Set<String> kids = dirChildren.get(seg);
                     fresh.add(new FileItem("archive:" + af.getAbsolutePath() + "!/" + prefix + seg,
-                            seg, true, 0, t, c == null ? 0 : c));
+                            seg, true, 0, t, kids == null ? 0 : kids.size()));
                 }
                 for (ArchiveEntryInfo e : files) {
                     String seg = e.name.substring(prefix.length());
@@ -2075,6 +2124,7 @@ public class MainActivity extends Activity {
         progress.setVisibility(View.VISIBLE);
         emptyView.setVisibility(View.GONE);
         final File dir = currentDir;
+        final boolean[] loadFailed = new boolean[1];
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -2107,6 +2157,7 @@ public class MainActivity extends Activity {
                             android.util.Log.d("MainActivity",
                                     "Shizuku listed " + fresh.size() + " items");
                         } else {
+                            loadFailed[0] = true;
                             // Hiện lỗi để diagnostic
                             final String shizukuErr = ShizukuFileHelper.getLastError();
                             runOnUiThread(new Runnable() {
@@ -2127,8 +2178,16 @@ public class MainActivity extends Activity {
                         if (currentDir != dir) {
                             return;
                         }
+                        if (loadFailed[0] && dir.equals(lastListedDir)
+                                && !items.isEmpty()) {
+                            // v1.2-m1: tải lại lỗi tạm thời -> giữ danh sách cũ
+                            progress.setVisibility(View.GONE);
+                            updateToolbar();
+                            return;
+                        }
                         items.clear();
                         items.addAll(fresh);
+                        lastListedDir = dir;
                         adapter.notifyDataSetChanged();
                         // M5: restore vị trí cuộn (clamp phòng khi list ngắn lại sau xóa)
                         final int target = Math.max(0,
@@ -2168,6 +2227,12 @@ public class MainActivity extends Activity {
                     return; // stale — user đã điều hướng chỗ khác
                 }
                 progress.setVisibility(View.GONE);
+                if ((err != null || fresh == null) && dir.equals(lastListedRootDir)
+                        && !items.isEmpty()) {
+                    // v1.2-m1: đọc lỗi tạm thời -> giữ danh sách cũ
+                    updateToolbar();
+                    return;
+                }
                 items.clear();
                 if (err != null) {
                     // v1.1-m1: chỉ log, không toast (tránh báo lỗi giả khi list vẫn ok)
@@ -2179,6 +2244,7 @@ public class MainActivity extends Activity {
                         items.add(it);
                     }
                     FileAdapter.sortFiles(items, sortMode);
+                    lastListedRootDir = dir;
                 }
                 adapter.notifyDataSetChanged();
                 // M5: restore vị trí cuộn
@@ -2565,7 +2631,10 @@ public class MainActivity extends Activity {
         final int n = clipboard.size();
         // M5: trong root mode hiện đường dẫn hệ thống
         String dstName;
-        if (isRootMode() && rootDir != null) {
+        if (archiveFile != null) {
+            // v1.1-m7: đích = vị trí đang xem trong archive (hiện rõ cho user)
+            dstName = archiveFile.getName() + "!/" + archiveDir;
+        } else if (isRootMode() && rootDir != null) {
             dstName = rootDir;
         } else {
             dstName = (currentDir != null && !currentDir.getName().isEmpty())
@@ -2585,6 +2654,10 @@ public class MainActivity extends Activity {
 
     /** Thực hiện copy/cut sau khi user xác nhận. */
     private void doPaste(final int count) {
+        if (archiveFile != null) {
+            doPasteIntoArchive(count);
+            return;
+        }
         if (isRootMode()) {
             doPasteRoot(count, clipboardCut);
             return;
@@ -2613,6 +2686,102 @@ public class MainActivity extends Activity {
                 toast("Đã dán " + count + " mục");
             }
         });
+    }
+
+    // -------------------------------------------------- v1.1-m7: dán vào archive
+
+    /**
+     * Dán (copy/cut) file từ ngoài vào vị trí hiện tại TRONG archive.
+     * Hỗ trợ ZIP/7Z qua 7zz native (cùng cơ chế Đổi tên/Xóa entry).
+     * Các trường hợp chưa hỗ trợ đều báo rõ lý do và GIỮ clipboard,
+     * không còn cảnh vào archive là mất trắng rồi "không thấy đích".
+     */
+    private void doPasteIntoArchive(final int count) {
+        final File af = archiveFile;
+        final int kind = archiveKind;
+        final String prefix = archiveDir;
+        if (kind != ArchiveUtils.KIND_ZIP && kind != ArchiveUtils.KIND_7Z) {
+            toast("Chưa hỗ trợ dán vào archive " + ArchiveUtils.kindLabel(kind)
+                    + " — hiện chỉ ZIP/7Z");
+            return;
+        }
+        // Archive mở từ bản cache của thư mục hệ thống (Shizuku): dán vào
+        // chỉ sửa bản tạm chứ không đụng file gốc -> chặn và báo rõ.
+        try {
+            File shizukuCache = new File(getCacheDir(), "shizuku");
+            if (af.getCanonicalPath().startsWith(shizukuCache.getCanonicalPath())) {
+                toast("Archive đang mở từ bản tạm (thư mục hệ thống) — chưa dán vào được");
+                return;
+            }
+        } catch (Exception ignored) {}
+        if (!af.canWrite()) {
+            toast("Archive ở vị trí chỉ đọc — không dán vào được");
+            return;
+        }
+        final List<File> srcs = new ArrayList<File>(clipboard);
+        final boolean cut = clipboardCut;
+        if (needsShizukuOp(srcs)) {
+            toast("Chưa hỗ trợ dán từ thư mục hệ thống vào archive");
+            return;
+        }
+        if (ArchiveUtils.needsPassword(af, kind)) {
+            ArchiveDialogs.askPassword(MainActivity.this,
+                    new ArchiveDialogs.PasswordListener() {
+                        @Override public void onPassword(String pw) {
+                            if (pw == null) return;
+                            runPasteIntoArchiveOp(af, kind, prefix, srcs, cut, count, pw);
+                        }
+                    });
+        } else {
+            runPasteIntoArchiveOp(af, kind, prefix, srcs, cut, count, null);
+        }
+    }
+
+    private void runPasteIntoArchiveOp(final File af, final int kind, final String prefix,
+                                       final List<File> srcs, final boolean cut,
+                                       final int count, final String pw) {
+        final int fmt = kind == ArchiveUtils.KIND_7Z ? Native7z.FMT_7Z : Native7z.FMT_ZIP;
+        final boolean[] okFlag = new boolean[]{false};
+        ArchiveDialogs.runOpWithProgress(this,
+                cut ? "Đang di chuyển vào archive..." : "Đang dán vào archive...",
+                new ArchiveDialogs.OpWithToken() {
+                    @Override public void start(final FileOps.OpCallback cb, CancelToken token) {
+                        // Bọc cb để biết op thành công thật hay không —
+                        // runOpWithProgress gọi Runnable hoàn tất cả khi lỗi/hủy,
+                        // mà lỗi/hủy thì phải GIỮ clipboard cho user thử lại.
+                        FileOps.OpCallback wrapped = new FileOps.OpCallback() {
+                            @Override public void onProgress(int d, int t, String n) {
+                                cb.onProgress(d, t, n);
+                            }
+                            @Override public void onDone(boolean ok, String err) {
+                                okFlag[0] = ok;
+                                cb.onDone(ok, err);
+                            }
+                        };
+                        if (!Native7z.addToArchive(MainActivity.this, af, fmt,
+                                srcs, prefix, pw, wrapped, token)) {
+                            cb.onDone(false, "Máy này chưa hỗ trợ dán vào archive");
+                        }
+                    }
+                }, "Đã dán " + count + " mục vào archive", new Runnable() {
+                    @Override public void run() {
+                        loadDir();
+                        if (!okFlag[0]) return; // lỗi/hủy: giữ clipboard
+                        exitPasteMode();
+                        if (cut) {
+                            // Dán (di chuyển) xong mới xóa nguồn ở ngoài.
+                            FileOps.deleteFiles(srcs, new FileOps.OpCallback() {
+                                @Override public void onProgress(int d, int t, String n) {}
+                                @Override public void onDone(boolean ok, String err) {
+                                    if (!ok) {
+                                        toast("Đã dán vào archive nhưng xóa file gốc thất bại"
+                                                + (err != null ? ": " + err : ""));
+                                    }
+                                }
+                            });
+                        }
+                    }
+                });
     }
 
     // -------------------------------------------------- v1.1-m2: extract-pick mode
@@ -2825,7 +2994,7 @@ public class MainActivity extends Activity {
                 final java.util.List<String> names = new java.util.ArrayList<String>();
                 if (item.isDir) {
                     java.util.List<ArchiveEntryInfo> all =
-                            ArchiveUtils.listEntries(af, kind);
+                            getArchiveEntries(af, kind);
                     for (ArchiveEntryInfo e : all) {
                         if (e.name.startsWith(entry)) names.add(e.name);
                     }
@@ -3020,7 +3189,11 @@ public class MainActivity extends Activity {
 
     private void showOverflowPopup(View anchorView) {
         final boolean inZip = archiveFile != null;
-        final boolean canPaste = !inZip && clipboard != null && !clipboard.isEmpty();
+        // v1.1-m7: trong archive ZIP/7Z cũng dán được (vào vị trí đang xem);
+        // TAR/REM thì ẩn nút Dán — bấm FAB sẽ có thông báo rõ ràng.
+        final boolean canPaste = clipboard != null && !clipboard.isEmpty()
+                && (!inZip || archiveKind == ArchiveUtils.KIND_ZIP
+                        || archiveKind == ArchiveUtils.KIND_7Z);
 
         final boolean night = (getResources().getConfiguration().uiMode
                 & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;

@@ -179,7 +179,7 @@ public class TarUtils {
                             }
                             String name = e.getName();
                             progress(cb, done[0] + 1, total, name);
-                            String err = extractCurrent(tis, e, destDir, destCanon, overwrite, token);
+                            String err = extractCurrent(tis, e, destDir, destCanon, overwrite, "", token);
                             if (err != null) {
                                 firstError[0] = err;
                                 break;
@@ -206,6 +206,7 @@ public class TarUtils {
     public static void extractEntries(final File tarFile, final boolean gzip,
                                       final List<String> entryNames,
                                       final File destDir, final boolean overwrite,
+                                      final String stripPrefix,
                                       final FileOps.OpCallback cb, final CancelToken token) {
         new Thread(new Runnable() {
             @Override
@@ -238,7 +239,7 @@ public class TarUtils {
                             if (!wanted.contains(e.getName())) continue;
                             String name = e.getName();
                             progress(cb, done[0] + 1, total, name);
-                            String err = extractCurrent(tis, e, destDir, destCanon, overwrite, token);
+                            String err = extractCurrent(tis, e, destDir, destCanon, overwrite, stripPrefix, token);
                             if (err != null) {
                                 firstError[0] = err;
                                 break;
@@ -422,9 +423,10 @@ public class TarUtils {
      */
     private static String extractCurrent(TarArchiveInputStream tis, TarArchiveEntry e,
                                          File destDir, String destCanon, boolean overwrite,
-                                         CancelToken token) {
+                                         String stripPrefix, CancelToken token) {
         try {
-            String name = e.getName();
+            String name = ArchiveUtils.stripPrefix(e.getName(), stripPrefix);
+            if (name == null || name.isEmpty()) return null; // chính gốc đã chọn
             File out = new File(destDir, name);
             String outCanon;
             try {

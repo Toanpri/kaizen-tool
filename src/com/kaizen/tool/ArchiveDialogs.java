@@ -489,27 +489,48 @@ public class ArchiveDialogs {
     public static void extractDirect(final Activity a, final File archiveFile, final int kind,
                                      final File destDir, final Runnable onDone) {
         if (a == null || archiveFile == null || destDir == null) return;
+        // v1.2-m1: đích ở vùng Shizuku (Android/data...) — File API không
+        // chạm được nên trước đây luôn văng "Không tạo được thư mục đích".
+        if (destNeedsShizuku(destDir)) {
+            if (ArchiveUtils.needsPassword(archiveFile, kind)) {
+                askPassword(a, new PasswordListener() {
+                    @Override public void onPassword(String pw) {
+                        if (pw == null) return;
+                        runExtractViaShizuku(a, archiveFile, kind, null, destDir, pw,
+                                "Đã giải nén xong", onDone);
+                    }
+                });
+            } else {
+                runExtractViaShizuku(a, archiveFile, kind, null, destDir, null,
+                        "Đã giải nén xong", onDone);
+            }
+            return;
+        }
         if (!destDir.exists() && !destDir.mkdirs()) {
             Toast.makeText(a, "Không tạo được thư mục đích", Toast.LENGTH_SHORT).show();
             return;
         }
-        final ExtractConfig config = new ExtractConfig() {
-            @Override
-            public void run(final File d, final boolean overwrite, final String password,
-                            final FileOps.OpCallback cb, final CancelToken token) {
-                ArchiveUtils.extractAll(archiveFile, kind, d, overwrite, password, cb, token);
-            }
-        };
-        if (ArchiveUtils.needsPassword(archiveFile, kind)) {
-            askPassword(a, new PasswordListener() {
-                @Override public void onPassword(String pw) {
-                    if (pw == null) return; // user hủy
-                    startExtract(a, destDir, false, pw, config, "Đã giải nén xong", onDone);
+        checkSpaceThenRun(a, archiveFile, kind, null, destDir, new Runnable() {
+            @Override public void run() {
+                final ExtractConfig config = new ExtractConfig() {
+                    @Override
+                    public void run(final File d, final boolean overwrite, final String password,
+                                    final FileOps.OpCallback cb, final CancelToken token) {
+                        ArchiveUtils.extractAll(archiveFile, kind, d, overwrite, password, cb, token);
+                    }
+                };
+                if (ArchiveUtils.needsPassword(archiveFile, kind)) {
+                    askPassword(a, new PasswordListener() {
+                        @Override public void onPassword(String pw) {
+                            if (pw == null) return; // user hủy
+                            startExtract(a, destDir, false, pw, config, "Đã giải nén xong", onDone);
+                        }
+                    });
+                } else {
+                    startExtract(a, destDir, false, null, config, "Đã giải nén xong", onDone);
                 }
-            });
-        } else {
-            startExtract(a, destDir, false, null, config, "Đã giải nén xong", onDone);
-        }
+            }
+        });
     }
 
     /**
@@ -568,7 +589,8 @@ public class ArchiveDialogs {
                     public void run(final File destDir, final boolean overwrite, final String password,
                                     final FileOps.OpCallback cb, final CancelToken token) {
                         ArchiveUtils.extractEntries(archiveFile, kind, entryNames,
-                                destDir, overwrite, password, cb, token);
+                                destDir, overwrite, password,
+                                ArchiveUtils.commonParentPrefix(entryNames), cb, token);
                     }
                 }, defaultDestDir, "Đã giải nén xong", onDone);
     }
@@ -582,28 +604,372 @@ public class ArchiveDialogs {
                                             final Runnable onDone) {
         if (a == null || archiveFile == null || entryNames == null || entryNames.isEmpty()
                 || destDir == null) return;
+        // v1.2-m1 (theo ý Kazoi): đích đã có mục trùng tên thì HỎI trước
+        // "Ghi đè không?" — Có thì đè, Hủy thì thôi, không tự ý xử lý.
+        resolveEntryOverwrite(a, entryNames, destDir, new OverwriteChoice() {
+            @Override public void onProceed() {
+                doExtractEntriesDirect(a, archiveFile, kind, entryNames, destDir, onDone);
+            }
+            @Override public void onCancel() { /* hủy hẳn, không đụng vào đích */ }
+        });
+    }
+
+    private static void doExtractEntriesDirect(final Activity a, final File archiveFile,
+                                               final int kind, final List<String> entryNames,
+                                               final File destDir,
+                                               final Runnable onDone) {
+        // v1.2-m1: đích ở vùng Shizuku (Android/data...) — đi đường vòng
+        // qua cache rồi đẩy bằng shell, thay vì chết ở mkdirs như trước.
+        if (destNeedsShizuku(destDir)) {
+            if (ArchiveUtils.needsPassword(archiveFile, kind)) {
+                askPassword(a, new PasswordListener() {
+                    @Override public void onPassword(String pw) {
+                        if (pw == null) return;
+                        runExtractViaShizuku(a, archiveFile, kind, entryNames, destDir, pw,
+                                "Đã sao chép xong", onDone);
+                    }
+                });
+            } else {
+                runExtractViaShizuku(a, archiveFile, kind, entryNames, destDir, null,
+                        "Đã sao chép xong", onDone);
+            }
+            return;
+        }
         if (!destDir.exists() && !destDir.mkdirs()) {
             Toast.makeText(a, "Không tạo được thư mục đích", Toast.LENGTH_SHORT).show();
             return;
         }
-        final ExtractConfig config = new ExtractConfig() {
-            @Override
-            public void run(final File d, final boolean overwrite, final String password,
-                            final FileOps.OpCallback cb, final CancelToken token) {
-                ArchiveUtils.extractEntries(archiveFile, kind, entryNames,
-                        d, overwrite, password, cb, token);
-            }
-        };
-        if (ArchiveUtils.needsPassword(archiveFile, kind)) {
-            askPassword(a, new PasswordListener() {
-                @Override public void onPassword(String pw) {
-                    if (pw == null) return; // user hủy
-                    startExtract(a, destDir, false, pw, config, "Đã sao chép xong", onDone);
+        checkSpaceThenRun(a, archiveFile, kind, entryNames, destDir, new Runnable() {
+            @Override public void run() {
+                final ExtractConfig config = new ExtractConfig() {
+                    @Override
+                    public void run(final File d, final boolean overwrite, final String password,
+                                    final FileOps.OpCallback cb, final CancelToken token) {
+                        ArchiveUtils.extractEntries(archiveFile, kind, entryNames,
+                                d, overwrite, password,
+                                ArchiveUtils.commonParentPrefix(entryNames), cb, token);
+                    }
+                };
+                if (ArchiveUtils.needsPassword(archiveFile, kind)) {
+                    askPassword(a, new PasswordListener() {
+                        @Override public void onPassword(String pw) {
+                            if (pw == null) return; // user hủy
+                            startExtract(a, destDir, true, pw, config, "Đã sao chép xong", onDone);
+                        }
+                    });
+                } else {
+                    startExtract(a, destDir, true, null, config, "Đã sao chép xong", onDone);
                 }
-            });
-        } else {
-            startExtract(a, destDir, false, null, config, "Đã sao chép xong", onDone);
+            }
+        });
+    }
+
+    // ------------------------------------------------------------------
+    // v1.2-m1: hỏi ghi đè khi đích đã có mục trùng tên (luồng Sao chép)
+    // ------------------------------------------------------------------
+
+    private interface OverwriteChoice {
+        void onProceed();
+        void onCancel();
+    }
+
+    /**
+     * Kiểm tra các mục cấp-1 (sau khi bỏ tiền tố thư mục cha) có mục nào
+     * đã tồn tại ở đích không. Không trùng -> chạy ngay với overwrite=true
+     * (không có gì để đè). Có trùng -> popup hỏi "Ghi đè không?":
+     * Có -> chạy tiếp (đè), Hủy -> dừng hẳn.
+     */
+    private static void resolveEntryOverwrite(final Activity a,
+                                              final List<String> entryNames,
+                                              final File destDir,
+                                              final OverwriteChoice choice) {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                String strip = ArchiveUtils.commonParentPrefix(entryNames);
+                java.util.LinkedHashSet<String> tops =
+                        new java.util.LinkedHashSet<String>();
+                for (String n : entryNames) {
+                    String rel = ArchiveUtils.stripPrefix(n, strip);
+                    if (rel == null || rel.isEmpty()) continue;
+                    int slash = rel.indexOf('/');
+                    tops.add(slash >= 0 ? rel.substring(0, slash) : rel);
+                }
+                final boolean shizuku = destNeedsShizuku(destDir);
+                final java.util.List<String> conflicts =
+                        new java.util.ArrayList<String>();
+                for (String t : tops) {
+                    boolean exists = shizuku
+                            ? shellPathExists(destDir.getAbsolutePath() + "/" + t)
+                            : new File(destDir, t).exists();
+                    if (exists) conflicts.add(t);
+                }
+                a.runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (conflicts.isEmpty()) {
+                            choice.onProceed();
+                            return;
+                        }
+                        StringBuilder msg = new StringBuilder(
+                                "Thư mục đích đã có sẵn các mục trùng tên:");
+                        for (int i = 0; i < conflicts.size() && i < 5; i++) {
+                            msg.append("\n• ").append(conflicts.get(i));
+                        }
+                        if (conflicts.size() > 5) msg.append("\n• ...");
+                        msg.append("\n\nGhi đè lên các mục này?");
+                        new CatBuilder(a, R.style.DialogTheme)
+                                .setTitle("Mục đã tồn tại")
+                                .setMessage(msg.toString())
+                                .setPositiveButton("Có",
+                                        new DialogInterface.OnClickListener() {
+                                            @Override public void onClick(
+                                                    DialogInterface d, int w) {
+                                                choice.onProceed();
+                                            }
+                                        })
+                                .setNegativeButton("Hủy",
+                                        new DialogInterface.OnClickListener() {
+                                            @Override public void onClick(
+                                                    DialogInterface d, int w) {
+                                                choice.onCancel();
+                                            }
+                                        })
+                                .show();
+                    }
+                });
+            }
+        }).start();
+    }
+
+    // ------------------------------------------------------------------
+    // v1.2-m1: đích ở vùng Shizuku + cảnh báo dung lượng trước khi giải nén
+    // ------------------------------------------------------------------
+
+    /**
+     * Đích (hoặc tổ tiên gần nhất đang tồn tại của nó) có nằm ở vùng chỉ
+     * đọc/ghi được qua Shizuku không. Kiểm tra tổ tiên để đích chưa tồn
+     * tại (vd "./<tên file>/") trong thư mục thường không bị nhận nhầm.
+     */
+    private static boolean destNeedsShizuku(File destDir) {
+        File p = destDir;
+        while (p != null && !p.exists()) p = p.getParentFile();
+        if (p == null) return false;
+        return ShizukuFileHelper.needsShizuku(p.getAbsolutePath());
+    }
+
+    /**
+     * Giải nén vào thư mục tạm trong cache, rồi đẩy kết quả vào đích
+     * Shizuku bằng shell (mkdir -p + cp -r). entryNames == null = cả archive.
+     */
+    private static void runExtractViaShizuku(final Activity a, final File archiveFile,
+                                             final int kind, final List<String> entryNames,
+                                             final File destDir, final String password,
+                                             final String successMsg, final Runnable onDone) {
+        final boolean whole = entryNames == null;
+        runArchiveOp(a, whole ? "Đang giải nén..." : "Đang sao chép...",
+                new Op() {
+                    @Override public void start(final FileOps.OpCallback cb,
+                                                final CancelToken token) {
+                        // v1.2-m1 (vá theo test của Kazoi): staging PHẢI nằm ở
+                        // bộ nhớ ngoài (external cache). Để ở cache riêng
+                        // /data/user/0/... thì tiến trình Shizuku (user shell)
+                        // không đọc được -> cp "Permission denied".
+                        File base = a.getExternalCacheDir();
+                        if (base == null) base = a.getCacheDir();
+                        final File staging = new File(base,
+                                "kaizen-extract-" + System.currentTimeMillis());
+                        FileOps.OpCallback stageCb = new FileOps.OpCallback() {
+                            @Override public void onProgress(int d, int t, String n) {
+                                cb.onProgress(d, t, n);
+                            }
+                            @Override public void onDone(boolean ok, String err) {
+                                if (!ok) {
+                                    deleteRecursiveQuiet(staging);
+                                    cb.onDone(false, err);
+                                    return;
+                                }
+                                pushStagingToShizuku(staging, destDir, cb, token);
+                            }
+                        };
+                        if (whole) {
+                            ArchiveUtils.extractAll(archiveFile, kind, staging, true,
+                                    password, stageCb, token);
+                        } else {
+                            ArchiveUtils.extractEntries(archiveFile, kind, entryNames,
+                                    staging, true, password,
+                                    ArchiveUtils.commonParentPrefix(entryNames),
+                                    stageCb, token);
+                        }
+                    }
+                }, successMsg, onDone);
+    }
+
+    /** Đẩy từng mục con của staging vào đích bằng cp -r qua Shizuku. */
+    private static void pushStagingToShizuku(final File staging, final File destDir,
+                                             final FileOps.OpCallback cb,
+                                             final CancelToken token) {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                String err = null;
+                try {
+                    if (!ShizukuFileHelper.mkdir(destDir.getAbsolutePath())) {
+                        err = ShizukuFileHelper.getLastError();
+                    } else {
+                        File[] kids = staging.listFiles();
+                        if (kids != null) {
+                            for (int i = 0; i < kids.length; i++) {
+                                if (token != null && token.isCancelled()) {
+                                    err = "Đã hủy";
+                                    break;
+                                }
+                                cb.onProgress(i + 1, kids.length, kids[i].getName());
+                                String destKid = destDir.getAbsolutePath()
+                                        + "/" + kids[i].getName();
+                                boolean ok;
+                                if (kids[i].isDirectory()
+                                        && shellPathExists(destKid)) {
+                                    // v1.2-m1 vá 3 (theo test của Kazoi):
+                                    // đích ĐÃ có folder trùng tên -> GỘP
+                                    // nội dung vào trong. cp -r thẳng vào
+                                    // folder có sẵn làm nó lồng thêm một
+                                    // tầng (b/b/c, c/c) thay vì merge như
+                                    // giải nén thường.
+                                    ok = ShizukuFileHelper.mkdir(destKid)
+                                            && pushMergeDir(kids[i], destKid, token);
+                                } else {
+                                    // Chưa có ở đích (hoặc là file): chép
+                                    // nguyên cây / ghi đè như cũ.
+                                    ok = ShizukuFileHelper.copy(
+                                            kids[i].getAbsolutePath(), destKid);
+                                }
+                                if (!ok) {
+                                    err = ShizukuFileHelper.getLastError();
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    err = e.getMessage() != null ? e.getMessage() : e.toString();
+                } finally {
+                    deleteRecursiveQuiet(staging);
+                }
+                cb.onDone(err == null, err);
+            }
+        }).start();
+    }
+
+    /** Đích có tồn tại không, hỏi qua shell (File API không stat được vùng data). */
+    private static boolean shellPathExists(String path) {
+        try {
+            String r = ShizukuFileHelper.runCommand("ls", "-d", path);
+            return r != null && !r.startsWith("ERROR");
+        } catch (Exception e) {
+            return false;
         }
+    }
+
+    /**
+     * Đổ nội dung srcDir vào destDir (đã tồn tại ở đích) theo kiểu gộp
+     * đệ quy: thư mục con thì mkdir rồi đệ quy, file thì cp ghi đè.
+     */
+    private static boolean pushMergeDir(File srcDir, String destDirPath,
+                                        CancelToken token) {
+        File[] kids = srcDir.listFiles();
+        if (kids == null) return true;
+        java.util.Arrays.sort(kids,
+                (x, y) -> x.getName().compareTo(y.getName()));
+        for (File kid : kids) {
+            if (token != null && token.isCancelled()) return false;
+            String destKid = destDirPath + "/" + kid.getName();
+            if (kid.isDirectory()) {
+                if (!ShizukuFileHelper.mkdir(destKid)) return false;
+                if (!pushMergeDir(kid, destKid, token)) return false;
+            } else {
+                if (!ShizukuFileHelper.copy(kid.getAbsolutePath(), destKid)) {
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    private static void deleteRecursiveQuiet(File f) {
+        if (f == null || !f.exists()) return;
+        if (f.isDirectory()) {
+            File[] kids = f.listFiles();
+            if (kids != null) {
+                for (File k : kids) deleteRecursiveQuiet(k);
+            }
+        }
+        try { f.delete(); } catch (Exception ignored) {}
+    }
+
+    /**
+     * Ước tính dung lượng giải nén (tổng size các entry sẽ bung) và so
+     * với chỗ trống ở đích; thiếu thì hỏi xác nhận trước thay vì để máy
+     * báo "hết dung lượng" giữa chừng. entryNames == null = cả archive.
+     */
+    private static void checkSpaceThenRun(final Activity a, final File af, final int kind,
+                                          final List<String> entryNames, final File destDir,
+                                          final Runnable proceed) {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                long need = 0;
+                try {
+                    List<ArchiveEntryInfo> all = ArchiveUtils.listEntries(af, kind);
+                    if (entryNames == null) {
+                        for (ArchiveEntryInfo e : all) {
+                            if (!e.isDir) need += e.size;
+                        }
+                    } else {
+                        java.util.Set<String> want =
+                                new java.util.HashSet<String>(entryNames);
+                        for (ArchiveEntryInfo e : all) {
+                            if (e.isDir) continue;
+                            if (want.contains(e.name)) {
+                                need += e.size;
+                                continue;
+                            }
+                            for (String w : entryNames) {
+                                if (w.endsWith("/") && e.name.startsWith(w)) {
+                                    need += e.size;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception ignored) {}
+                File probe = destDir;
+                while (probe != null && !probe.exists()) probe = probe.getParentFile();
+                final long free = probe != null ? probe.getUsableSpace() : 0;
+                final long needF = need;
+                a.runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (a.isFinishing()) return;
+                        if (needF > 0 && free > 0 && needF > free) {
+                            new CatBuilder(a, R.style.DialogTheme)
+                                    .setTitle("Sắp hết dung lượng")
+                                    .setMessage("Giải nén cần khoảng "
+                                            + FileOps.formatSize(needF)
+                                            + " nhưng thư mục đích chỉ còn trống "
+                                            + FileOps.formatSize(free)
+                                            + ". Vẫn tiếp tục?")
+                                    .setPositiveButton("Vẫn tiếp tục",
+                                            new DialogInterface.OnClickListener() {
+                                                @Override public void onClick(
+                                                        DialogInterface d, int w) {
+                                                    proceed.run();
+                                                }
+                                            })
+                                    .setNegativeButton("Hủy", null)
+                                    .show();
+                        } else {
+                            proceed.run();
+                        }
+                    }
+                });
+            }
+        }).start();
     }
 
     // ------------------------------------------------------------------
