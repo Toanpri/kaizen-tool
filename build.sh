@@ -10,7 +10,7 @@ ANDROID_JAR="$SDK/platforms/android-34/android-34-ext12/android.jar"
 JDK="$SDK/jdk-17.0.20.1+1/bin"
 export PATH="$JDK:$BT:$PATH"
 
-APK_NAME="KaizenTool-v1.1-m5.apk"
+APK_NAME="KaizenTool-v1.1-m6.apk"
 KEYSTORE="$PROJ/kaizen.keystore"
 STOREPASS="kaizen123"
 # M3: Apache Commons Compress + deps (7z/tar support)

@@ -255,17 +255,24 @@ public class MainActivity extends Activity {
                                             });
                                 }
                             });
-                } else if (item.name.toLowerCase().endsWith(".apk")) {
+                } else if (item.name.toLowerCase().endsWith(".apk")
+                        || SplitApkInstaller.isBundleName(item.name)) {
                     // v1.1-m2: tap APK -> chọn Xem hoặc Cài đặt
+                    // v1.1-m6: gói split (.apks/.xapk/.apkm) đi chung nhánh này
                     final FileItem apkItem = item;
+                    final boolean bundle = SplitApkInstaller.isBundleName(item.name);
                     new CatBuilder(MainActivity.this, R.style.DialogTheme)
                             .setTitle(item.name)
                             .setPositiveButton("Cài đặt",
                                     new DialogInterface.OnClickListener() {
                                         @Override public void onClick(
                                                 DialogInterface d, int which) {
-                                            ApkDialogs.showInstall(
-                                                    MainActivity.this, apkItem.file);
+                                            if (bundle) {
+                                                installBundleFromItem(apkItem);
+                                            } else {
+                                                ApkDialogs.showInstall(
+                                                        MainActivity.this, apkItem.file);
+                                            }
                                         }
                                     })
                             .setNeutralButton("Xem",
@@ -1233,7 +1240,8 @@ public class MainActivity extends Activity {
                         }
                     }));
         }
-        if (!inArchive && item.name.toLowerCase().endsWith(".apk")) {
+        if (!inArchive && (item.name.toLowerCase().endsWith(".apk")
+                || SplitApkInstaller.isBundleName(item.name))) {
             // v1.1-m2: xem nội dung APK như archive
             rows.add(new ContextMenuDialog.Item("Xem", R.drawable.ic_open,
                     new ContextMenuDialog.OnAction() {
@@ -1244,12 +1252,17 @@ public class MainActivity extends Activity {
             rows.add(new ContextMenuDialog.Item("Cài đặt", R.drawable.ic_file_apk,
                     new ContextMenuDialog.OnAction() {
                         @Override public void run() {
-                            ApkDialogs.showInstall(MainActivity.this, item.file);
+                            if (SplitApkInstaller.isBundleName(item.name)) {
+                                installBundleFromItem(item);
+                            } else {
+                                ApkDialogs.showInstall(MainActivity.this, item.file);
+                            }
                         }
                     }));
         }
         if (!inArchive && !item.isDir && ArchiveUtils.kindForName(item.name) < 0
-                && !item.name.toLowerCase().endsWith(".apk")) {
+                && !item.name.toLowerCase().endsWith(".apk")
+                && !SplitApkInstaller.isBundleName(item.name)) {
             final String openLabel = MediaHelper.mediaTypeOf(item.name) >= 0
                     ? "Mở bằng app khác" : "Mở";
             rows.add(new ContextMenuDialog.Item(openLabel, R.drawable.ic_open,
@@ -1726,6 +1739,30 @@ public class MainActivity extends Activity {
             }).start();
         } else {
             enterArchive(item.file, ArchiveUtils.KIND_ZIP);
+        }
+    }
+
+    /** Cài gói split (.apks/.xapk/.apkm): file qua Shizuku phải copy về cache trước mới đọc được. */
+    private void installBundleFromItem(final FileItem item) {
+        if (item.viaShizuku) {
+            new Thread(new Runnable() {
+                @Override public void run() {
+                    final java.io.File cached = ShizukuFileHelper.copyToCache(
+                            MainActivity.this, item.file.getAbsolutePath(), item.name);
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            if (cached != null && cached.exists()) {
+                                ApkDialogs.showInstallBundle(MainActivity.this, cached);
+                            } else {
+                                toast("Không đọc được file: "
+                                        + ShizukuFileHelper.getLastError());
+                            }
+                        }
+                    });
+                }
+            }).start();
+        } else {
+            ApkDialogs.showInstallBundle(MainActivity.this, item.file);
         }
     }
 

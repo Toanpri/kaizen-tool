@@ -85,27 +85,37 @@ public class ApkUtils {
     }
 
     /**
+     * Cổng quyền cài app (dùng chung cho cài APK thường và gói split):
+     * API >= 26 cần canRequestPackageInstalls. Đã có quyền (hoặc API < 26)
+     * thì trả true. Chưa có thì mở Settings ACTION_MANAGE_UNKNOWN_APP_SOURCES
+     * để user bật "Cho phép từ nguồn này" rồi trả false — caller dừng tại đây,
+     * user cấp quyền xong thì bấm cài lại.
+     */
+    public static boolean ensureInstallPermission(Activity a) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            PackageManager pm = a.getPackageManager();
+            if (!pm.canRequestPackageInstalls()) {
+                Uri pkgUri = Uri.parse("package:" + a.getPackageName());
+                Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, pkgUri);
+                settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                a.startActivity(settings);
+                Toast.makeText(a, "Bật \"Cho phép từ nguồn này\" rồi cài lại",
+                        Toast.LENGTH_LONG).show();
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Mở system installer cho file APK.
-     * - API >= 26: nếu chưa có quyền canRequestPackageInstalls → mở Settings
-     *   ACTION_MANAGE_UNKNOWN_APP_SOURCES để user cấp quyền, rồi return.
+     * - API >= 26: chưa có quyền cài -> ensureInstallPermission mở Settings, return.
      * - Dùng content:// URI qua ApkFileProvider cho mọi API.
      */
     public static void installApk(Activity a, File apkFile) {
         try {
             if (apkFile == null || !apkFile.isFile()) return;
-            PackageManager pm = a.getPackageManager();
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                if (!pm.canRequestPackageInstalls()) {
-                    Uri pkgUri = Uri.parse("package:" + a.getPackageName());
-                    Intent settings = new Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, pkgUri);
-                    settings.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-                    a.startActivity(settings);
-                    Toast.makeText(a, "Bật \"Cho phép từ nguồn này\" rồi cài lại",
-                            Toast.LENGTH_LONG).show();
-                    return;
-                }
-            }
+            if (!ensureInstallPermission(a)) return;
 
             Uri uri = ApkFileProvider.uriFor(apkFile);
             Intent intent = new Intent(Intent.ACTION_VIEW);

@@ -82,7 +82,8 @@ public class ThumbnailLoader {
     private static boolean isPreviewable(FileItem item) {
         if (item.isDir) return false;
         String ext = extOf(item.name);
-        return isImageExt(ext) || isVideoExt(ext) || ext.equals("apk");
+        return isImageExt(ext) || isVideoExt(ext) || ext.equals("apk")
+                || SplitApkInstaller.isBundleName(item.name);
     }
 
     private static String extOf(String name) {
@@ -126,6 +127,8 @@ public class ThumbnailLoader {
                     bmp = decodeVideoThumb(path);
                 } else if (ext.equals("apk")) {
                     bmp = decodeApkIcon(path);
+                } else if (SplitApkInstaller.isBundleName(item.name)) {
+                    bmp = decodeBundleIcon(path);
                 }
             } catch (Exception e) {
                 bmp = null; // fallback below
@@ -224,6 +227,127 @@ public class ThumbnailLoader {
         } catch (Exception e) {
             return null;
         }
+    }
+
+    // Khóa để 2 thread không trích cùng một APK chính ra cache một lúc.
+    private static final Object BASE_EXTRACT_LOCK = new Object();
+
+    /**
+     * Icon cho gói split (.apks/.xapk/.apkm): icon của app nằm trong APK chính
+     * ở trong gói. XAPK thường có sẵn icon.png ở gốc gói -> đọc thẳng.
+     * Các gói còn lại: trích riêng APK chính ra cache (đặt tên theo gói nên
+     * lần sau dùng lại, không trích lại cả trăm MB) rồi đọc icon như APK thường.
+     */
+    private Bitmap decodeBundleIcon(String bundlePath) {
+        java.io.File bundle = new java.io.File(bundlePath);
+        if (!bundle.isFile()) return null;
+        java.util.zip.ZipFile zip = null;
+        try {
+            zip = new java.util.zip.ZipFile(bundle);
+            java.util.zip.ZipEntry iconEntry = null;
+            java.util.zip.ZipEntry baseEntry = null;
+            java.util.zip.ZipEntry largestEntry = null;
+            long largestSize = -1;
+            java.util.Enumeration<? extends java.util.zip.ZipEntry> en = zip.entries();
+            while (en.hasMoreElements()) {
+                java.util.zip.ZipEntry e = en.nextElement();
+                if (e.isDirectory()) continue;
+                String n = e.getName().replace('\\', '/');
+                String lower = n.toLowerCase(java.util.Locale.US);
+                String base = n.substring(n.lastIndexOf('/') + 1);
+                if (lower.equals("icon.png")) {
+                    iconEntry = e;
+                } else if (lower.endsWith(".apk")) {
+                    if (e.getSize() > largestSize) {
+                        largestSize = e.getSize();
+                        largestEntry = e;
+                    }
+                    if (base.equalsIgnoreCase("base.apk")) {
+                        baseEntry = e;
+                    } else if (baseEntry == null) {
+                        String bl = base.toLowerCase(java.util.Locale.US);
+                        if (!bl.contains("config.") && !bl.startsWith("split")) {
+                            baseEntry = e;
+                        }
+                    }
+                }
+            }
+            if (iconEntry != null) {
+                java.io.InputStream in = null;
+                try {
+                    in = zip.getInputStream(iconEntry);
+                    Bitmap b = BitmapFactory.decodeStream(in);
+                    if (b != null) return b;
+                } finally {
+                    if (in != null) try { in.close(); } catch (Exception ignored) { }
+                }
+            }
+            java.util.zip.ZipEntry pick = baseEntry != null ? baseEntry : largestEntry;
+            if (pick == null) return null;
+            java.io.File extracted = extractEntryToCache(zip, pick, bundle);
+            if (extracted == null) return null;
+            return decodeApkIcon(extracted.getAbsolutePath());
+        } catch (Exception e) {
+            return null;
+        } finally {
+            if (zip != null) {
+                try { zip.close(); } catch (Exception ignored) { }
+            }
+        }
+    }
+
+    /** Trích một entry của gói ra cache/bundle-base (tái dùng nếu đã có và đủ dung lượng). */
+    private java.io.File extractEntryToCache(java.util.zip.ZipFile zip,
+                                             java.util.zip.ZipEntry entry,
+                                             java.io.File bundle) {
+        synchronized (BASE_EXTRACT_LOCK) {
+            try {
+                java.io.File dir = new java.io.File(appContext.getCacheDir(), "bundle-base");
+                if (!dir.exists()) dir.mkdirs();
+                String key = Integer.toHexString(bundle.getAbsolutePath().hashCode())
+                        + "_" + bundle.length() + "_" + bundle.lastModified() + ".apk";
+                java.io.File out = new java.io.File(dir, key);
+                if (out.isFile() && out.length() == entry.getSize()) return out;
+                java.io.InputStream in = zip.getInputStream(entry);
+                try {
+                    java.io.OutputStream os = new java.io.FileOutputStream(out);
+                    try {
+                        byte[] buf = new byte[64 * 1024];
+                        int n;
+                        while ((n = in.read(buf)) > 0) os.write(buf, 0, n);
+                    } finally {
+                        os.close();
+                    }
+                } finally {
+                    in.close();
+                }
+                pruneBaseCache(dir, out);
+                return out;
+            } catch (Exception e) {
+                return null;
+            }
+        }
+    }
+
+    /** Giữ tối đa 6 APK chính trong cache icon, xóa cái cũ nhất. */
+    private static void pruneBaseCache(java.io.File dir, java.io.File keep) {
+        try {
+            java.io.File[] files = dir.listFiles();
+            if (files == null || files.length <= 6) return;
+            java.util.Arrays.sort(files, new java.util.Comparator<java.io.File>() {
+                @Override public int compare(java.io.File a, java.io.File b) {
+                    return Long.compare(a.lastModified(), b.lastModified());
+                }
+            });
+            int toDelete = files.length - 6;
+            for (java.io.File f : files) {
+                if (toDelete <= 0) break;
+                if (!f.equals(keep)) {
+                    f.delete();
+                    toDelete--;
+                }
+            }
+        } catch (Exception ignored) { }
     }
 
     private static Bitmap drawableToBitmap(Drawable d) {

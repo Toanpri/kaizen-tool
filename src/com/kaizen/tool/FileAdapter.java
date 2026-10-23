@@ -198,7 +198,8 @@ public class FileAdapter extends BaseAdapter {
                 || ext.equals("ogg")) {
             return R.drawable.ic_file_audio;
         }
-        if (ext.equals("apk")) {
+        if (ext.equals("apk") || ext.equals("apks")
+                || ext.equals("xapk") || ext.equals("apkm")) {
             return R.drawable.ic_file_apk;
         }
         if (ext.equals("7z")) {
