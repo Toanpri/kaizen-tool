@@ -93,6 +93,22 @@ public class ShizukuFileHelper {
     }
 
     /**
+     * 24/10: true CHỈ khi path chính là /Android/data hoặc /Android/obb
+     * (đúng 1 tầng đó, không tính cây con bên trong). Sửa 19:17 cùng ngày:
+     * bản đầu dùng contains() nên bỏ đếm cả cây con — sai, vì folder
+     * trong folder trong data vẫn cần đếm (vd: files/audio, files/config).
+     * Chuẩn hóa trailing slash trước khi so sánh.
+     */
+    public static boolean isDataOrObbDir(String path) {
+        if (path == null) return false;
+        String p = path;
+        while (p.endsWith("/") && p.length() > 1) {
+            p = p.substring(0, p.length() - 1);
+        }
+        return p.endsWith("/Android/data") || p.endsWith("/Android/obb");
+    }
+
+    /**
      * Liệt kê file trong thư mục qua `ls -la`.
      * Trả về list FileItem, hoặc null nếu thất bại.
      */
@@ -142,8 +158,14 @@ public class ShizukuFileHelper {
                 Log.w(TAG, "parse failed for: " + line);
             }
         }
-        // v1.1-m4: đếm số mục THẬT cho các folder con (1 lệnh shell gộp)
-        applyChildCounts(result, countChildren(path));
+        // 24/10: KHÔNG đếm con khi liệt kê đúng tầng /Android/data và
+        // /Android/obb — các folder app trong data không cần số mục.
+        // Đây chính là chặng chậm nhất khi vào data (script chạy ls cho
+        // từng folder con, data có hàng trăm folder app). Tầng sâu hơn
+        // (vd: data/<pkg>/files) vẫn đếm bình thường.
+        if (!isDataOrObbDir(path)) {
+            applyChildCounts(result, countChildren(path), path);
+        }
         return result;
     }
 
@@ -184,13 +206,28 @@ public class ShizukuFileHelper {
         return parseCounts(out);
     }
 
-    /** Thay các FileItem folder bằng bản có childCount thật (nếu đếm được). */
+    /**
+     * Thay các FileItem folder bằng bản có childCount thật (nếu đếm được).
+     * 24/10: khi parent là .../Android thì bỏ qua 2 mục data/obb — bản
+     * thân folder data/obb cũng không cần đếm (hướng của Kazoi).
+     */
     static void applyChildCounts(List<FileItem> items,
-                                 java.util.Map<String, Integer> counts) {
+                                 java.util.Map<String, Integer> counts,
+                                 String parentPath) {
         if (items == null || counts == null || counts.isEmpty()) return;
+        boolean parentIsAndroid = false;
+        if (parentPath != null) {
+            String p = parentPath;
+            while (p.endsWith("/") && p.length() > 1) {
+                p = p.substring(0, p.length() - 1);
+            }
+            parentIsAndroid = p.endsWith("/Android");
+        }
         for (int i = 0; i < items.size(); i++) {
             FileItem it = items.get(i);
             if (!it.isDir) continue;
+            if (parentIsAndroid
+                    && (it.name.equals("data") || it.name.equals("obb"))) continue;
             Integer c = counts.get(it.name);
             if (c == null) continue;
             FileItem ni = new FileItem(it.file.getAbsolutePath(), it.name,

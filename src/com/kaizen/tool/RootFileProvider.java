@@ -126,11 +126,16 @@ public class RootFileProvider {
         List<FileItem> items = parseLs(path, r.stdout);
         // v1.1-m4: đếm số mục THẬT cho các folder con (script dùng chung
         // với ShizukuFileHelper) thay vì để childCount = -1 hiện "—" mãi.
-        RootShell.ShellResult cr = RootShell.execPreferred(new String[]{
-                "sh", "-c", ShizukuFileHelper.CHILD_COUNT_SCRIPT, "kz", path});
-        if (cr.ok()) {
-            ShizukuFileHelper.applyChildCounts(items,
-                    ShizukuFileHelper.parseCounts(cr.stdout));
+        // 24/10: bỏ đếm khi liệt kê đúng tầng /Android/data và
+        // /Android/obb (hướng của Kazoi — vào data chậm chủ yếu vì
+        // chặng này). Tầng sâu hơn vẫn đếm bình thường.
+        if (!ShizukuFileHelper.isDataOrObbDir(path)) {
+            RootShell.ShellResult cr = RootShell.execPreferred(new String[]{
+                    "sh", "-c", ShizukuFileHelper.CHILD_COUNT_SCRIPT, "kz", path});
+            if (cr.ok()) {
+                ShizukuFileHelper.applyChildCounts(items,
+                        ShizukuFileHelper.parseCounts(cr.stdout), path);
+            }
         }
         return items;
     }

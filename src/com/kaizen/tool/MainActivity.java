@@ -2128,6 +2128,9 @@ public class MainActivity extends Activity {
         new Thread(new Runnable() {
             @Override
             public void run() {
+                // 24/10: đo chặng Shizuku + giữ ref để enrich nền ở cuối
+                long tShizukuLs = -1;
+                List<FileItem> shizukuFiles = null;
                 File[] raw = dir.listFiles();
                 final List<FileItem> fresh = new ArrayList<FileItem>();
                 if (raw != null) {
@@ -2142,12 +2145,15 @@ public class MainActivity extends Activity {
                     if (ShizukuHelper.isRunning() && ShizukuHelper.hasPermission()) {
                         android.util.Log.d("MainActivity",
                                 "listFiles null, trying Shizuku for: " + dir.getAbsolutePath());
-                        List<FileItem> shizukuFiles =
+                        long tLs0 = System.currentTimeMillis();
+                        shizukuFiles =
                                 ShizukuFileHelper.listFiles(dir.getAbsolutePath());
+                        tShizukuLs = System.currentTimeMillis() - tLs0;
                         if (shizukuFiles != null) {
-                            // v1.1-m1: tra tên app + icon cho /Android/data, /Android/obb
-                            ShizukuFileHelper.enrichWithAppInfo(MainActivity.this,
-                                    shizukuFiles, dir.getAbsolutePath());
+                            // 24/10: KHÔNG enrich ở đây nữa — list hiện ngay
+                            // sau ls+sort, tên app điền nền ở cuối worker
+                            // (enrich = 1 IPC PackageManager / folder, là
+                            // chặng chậm thứ 2 khi vào Android/data).
                             for (FileItem fi : shizukuFiles) {
                                 if (!showHidden && fi.name.startsWith(".")) {
                                     continue;
@@ -2155,7 +2161,8 @@ public class MainActivity extends Activity {
                                 fresh.add(fi);
                             }
                             android.util.Log.d("MainActivity",
-                                    "Shizuku listed " + fresh.size() + " items");
+                                    "Shizuku listed " + fresh.size() + " items in "
+                                            + tShizukuLs + "ms");
                         } else {
                             loadFailed[0] = true;
                             // Hiện lỗi để diagnostic
@@ -2205,6 +2212,24 @@ public class MainActivity extends Activity {
                         updateToolbar();
                     }
                 });
+                // 24/10: điền tên app nền — enrich chỉ có tác dụng ở
+                // /Android/data và /Android/obb (tự no-op ở nơi khác).
+                // List đã hiện từ trước nên chặng này không chặn UI nữa;
+                // guard currentDir để không refresh nhầm khi user đã đi chỗ khác.
+                if (shizukuFiles != null) {
+                    long tEn0 = System.currentTimeMillis();
+                    ShizukuFileHelper.enrichWithAppInfo(MainActivity.this,
+                            shizukuFiles, dir.getAbsolutePath());
+                    android.util.Log.d("MainActivity", "Shizuku enrich "
+                            + (System.currentTimeMillis() - tEn0) + "ms (ls was "
+                            + tShizukuLs + "ms)");
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            if (currentDir != dir) return;
+                            adapter.notifyDataSetChanged();
+                        }
+                    });
+                }
             }
         }).start();
     }
