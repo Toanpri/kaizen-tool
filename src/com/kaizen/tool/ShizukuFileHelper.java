@@ -235,6 +235,7 @@ public class ShizukuFileHelper {
             ni.viaShizuku = it.viaShizuku;
             ni.packageName = it.packageName;
             ni.appLabel = it.appLabel;
+            ni.perms = it.perms;
             items.set(i, ni);
         }
     }
@@ -295,7 +296,10 @@ public class ShizukuFileHelper {
         java.io.File f = new java.io.File(parentPath, name);
         String fullPath = f.getAbsolutePath();
         // Dùng constructor virtual (không chạm filesystem thật)
-        return new FileItem(fullPath, name, isDir, size, mtime, -1);
+        // v1.2-m4: giữ lại chuỗi quyền từ ls để dialog Thuộc tính dùng
+        FileItem it = new FileItem(fullPath, name, isDir, size, mtime, -1);
+        it.perms = perms;
+        return it;
     }
 
     /**

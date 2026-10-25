@@ -20,6 +20,8 @@ public class FileItem {
     public String appLabel;
     /** v1.1-m1: true nếu item này liệt kê qua Shizuku (cần copy ra cache trước khi mở) */
     public boolean viaShizuku = false;
+    /** v1.2-m4: chuỗi quyền từ `ls -la` (vd "-rw-r--r--"), chỉ có khi liệt kê qua Shizuku */
+    public String perms;
 
     public FileItem(File f) {
         this.file = f;

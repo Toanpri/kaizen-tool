@@ -126,6 +126,33 @@ public class Dialogs {
      */
     public static void showProperties(final Activity a, final File f,
                                      final boolean viaShizuku, final boolean isDir) {
+        // Đường thường: File API đọc được, dùng trực tiếp.
+        showProperties(a, f, viaShizuku, isDir,
+                f != null ? f.length() : 0,
+                f != null ? f.lastModified() : 0, null);
+    }
+
+    /**
+     * v1.2-m4: overload cho FileItem — đường Shizuku dùng size/ngày/quyền
+     * đã parse từ `ls -la` lúc liệt kê, thay vì File API (không stat được
+     * Android/data nên trả 0 B / epoch / trống).
+     */
+    public static void showProperties(final Activity a, final FileItem item) {
+        if (a == null || item == null) return;
+        showProperties(a, item.file, item.viaShizuku, item.isDir,
+                item.size, item.lastModified, item.perms);
+    }
+
+    /**
+     * Bản đầy đủ của showProperties. Khi viaShizuku=true thì size/date/perms
+     * lấy từ knownSize/knownLastModified/knownPerms (đã parse từ ls);
+     * khi false thì dùng File API như cũ. perms=null -> dùng
+     * canRead/canWrite như cũ (đường thường).
+     */
+    public static void showProperties(final Activity a, final File f,
+                                     final boolean viaShizuku, final boolean isDir,
+                                     final long knownSize, final long knownLastModified,
+                                     final String knownPerms) {
         if (a == null || f == null) return;
         if (!viaShizuku && !f.exists()) return;
         boolean isDirectory = viaShizuku ? isDir : f.isDirectory();
@@ -139,9 +166,17 @@ public class Dialogs {
         row(a, layout, "Đường dẫn: ", f.getAbsolutePath());
         row(a, layout, "Loại: ", isDirectory ? "Thư mục" : "Tệp");
         final TextView tvSize = row(a, layout, "Kích thước: ",
-                isDirectory ? "đang tính..." : FileOps.formatSize(f.length()));
-        row(a, layout, "Ngày sửa: ", FileOps.formatDate(f.lastModified()));
-        row(a, layout, "Quyền: ", (f.canRead() ? "đọc " : "") + (f.canWrite() ? "ghi" : ""));
+                isDirectory ? "đang tính..."
+                        : FileOps.formatSize(viaShizuku ? knownSize : f.length()));
+        long mtime = viaShizuku ? knownLastModified : f.lastModified();
+        row(a, layout, "Ngày sửa: ", mtime > 0 ? FileOps.formatDate(mtime) : "—");
+        String permsText;
+        if (viaShizuku) {
+            permsText = knownPerms != null ? knownPerms : "—";
+        } else {
+            permsText = (f.canRead() ? "đọc " : "") + (f.canWrite() ? "ghi" : "");
+        }
+        row(a, layout, "Quyền: ", permsText);
 
         // v1.1-m1: checkbox "Vô hiệu hoá quét đa phương tiện" (.nomedia) như ZArchiver
         // -> ẩn ảnh/video trong thư mục khỏi Gallery
@@ -239,23 +274,60 @@ public class Dialogs {
                 .show();
 
         // Folder size is computed on a background thread, then posted to UI.
-        // v1.1-m1: bỏ qua với Shizuku (File API không đọc được)
-        if (isDirectory && !viaShizuku) {
+        // v1.2-m4 fix: đường Shizuku trước đây bị bỏ qua (kẹt "đang tính..."
+        // mãi) — giờ tính bằng `du -sb` qua Shizuku (1 lệnh, không đi bộ
+        // đệ quy từng file như dirSize). Lỗi -> "không tính được", không kẹt.
+        if (isDirectory) {
             final String path = f.getAbsolutePath();
-            new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    final long size = dirSize(new File(path));
-                    final String text = FileOps.formatSize(size);
-                    new Handler(Looper.getMainLooper()).post(new Runnable() {
-                        @Override
-                        public void run() {
-                            tvSize.setText(text);
-                        }
-                    });
-                }
-            }).start();
+            if (viaShizuku) {
+                new Thread(new Runnable() {
+                    @Override public void run() {
+                        final String text = shizukuDirSizeText(path);
+                        new Handler(Looper.getMainLooper()).post(new Runnable() {
+                            @Override public void run() {
+                                tvSize.setText(text);
+                            }
+                        });
+                    }
+                }).start();
+            } else {
+                new Thread(new Runnable() {
+                    @Override
+                    public void run() {
+                        final long size = dirSize(new File(path));
+                        final String text = FileOps.formatSize(size);
+                        new Handler(Looper.getMainLooper()).post(new Runnable() {
+                            @Override
+                            public void run() {
+                                tvSize.setText(text);
+                            }
+                        });
+                    }
+                }).start();
+            }
         }
+    }
+
+    /** v1.2-m4: kích thước folder qua Shizuku bằng `du` (1 lệnh shell). */
+    private static String shizukuDirSizeText(String path) {
+        String out = ShizukuFileHelper.runCommand(
+                "sh", "-c", "du -sb \"$1\"", "kz", path);
+        if (out != null && !out.startsWith("ERROR:")) {
+            try {
+                return FileOps.formatSize(
+                        Long.parseLong(out.trim().split("\\s+")[0]));
+            } catch (Exception ignored) {}
+        }
+        // Fallback: du -s (số block 1K) — vẫn là số thật, không kẹt.
+        String out2 = ShizukuFileHelper.runCommand(
+                "sh", "-c", "du -s \"$1\"", "kz", path);
+        if (out2 != null && !out2.startsWith("ERROR:")) {
+            try {
+                return FileOps.formatSize(
+                        Long.parseLong(out2.trim().split("\\s+")[0]) * 1024);
+            } catch (Exception ignored) {}
+        }
+        return "không tính được";
     }
 
     // ------------------------------------------------------------------

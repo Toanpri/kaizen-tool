@@ -1373,9 +1373,7 @@ public class MainActivity extends Activity {
             rows.add(new ContextMenuDialog.Item("Thuộc tính", R.drawable.ic_info,
                     new ContextMenuDialog.OnAction() {
                         @Override public void run() {
-                            Dialogs.showProperties(
-                                    MainActivity.this, item.file,
-                                    item.viaShizuku, item.isDir);
+                            Dialogs.showProperties(MainActivity.this, item);
                         }
                     }));
         }
