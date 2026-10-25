@@ -867,54 +867,199 @@ public class MainActivity extends Activity {
             return;
         }
         exitSelectionMode();
-        // v1.1-m1: nếu file từ Shizuku -> copy ra staging trong cache rồi nén
+        // v1.1-m1: nếu file từ Shizuku -> copy ra staging rồi nén
+        // v1.2-m5: staging dời sang external cache (shell không ghi được
+        // cache riêng) + dùng chung cho cả menu "Nén thành...".
         if (needsShizukuOp(srcs)) {
-            toast("Đang chuẩn bị file qua Shizuku...");
-            new Thread(new Runnable() {
-                @Override public void run() {
-                    final java.io.File staging =
-                            new java.io.File(getCacheDir(), "compress_staging");
-                    deleteRecursive(staging);
-                    staging.mkdirs();
-                    final List<File> staged = new ArrayList<File>();
-                    boolean ok = true;
-                    for (File src : srcs) {
-                        String dstPath = staging.getAbsolutePath() + "/"
-                                + src.getName();
-                        if (!ShizukuFileHelper.copy(src.getAbsolutePath(), dstPath)) {
-                            ok = false;
-                            break;
-                        }
-                        staged.add(new java.io.File(dstPath));
-                    }
-                    final boolean stagedOk = ok;
-                    runOnUiThread(new Runnable() {
-                        @Override public void run() {
-                            if (stagedOk && !staged.isEmpty()) {
-                                ArchiveDialogs.showCompress(MainActivity.this,
-                                        staged, staging,
-                                        new Runnable() {
-                                            @Override public void run() {
-                                                toast("Đã nén vào "
-                                                        + staging.getAbsolutePath()
-                                                        + " — dùng Dán để di chuyển");
-                                                loadDir();
-                                            }
-                                        });
-                            } else {
-                                toast("Không chuẩn bị được file: "
-                                        + ShizukuFileHelper.getLastError());
-                            }
-                        }
-                    });
-                }
-            }).start();
+            stageShizukuThenCompress(srcs);
             return;
         }
         ArchiveDialogs.showCompress(MainActivity.this, srcs, currentDir,
                 new Runnable() {
                     @Override public void run() { loadDir(); }
                 });
+    }
+
+    /**
+     * v1.2-m5: nén file/folder trong vùng Shizuku — copy nguồn ra staging
+     * ở external cache bằng shell (shell ghi được external cache, không
+     * ghi được cache riêng /data/user/0/...), rồi nén trong staging.
+     * v1.2-m5-test2: nén xong tự đẩy file nén về lại thư mục gốc qua
+     * Shizuku (trùng tên thì hỏi Ghi đè Có/Hủy) — không còn bắt user tự Dán.
+     */
+    private void stageShizukuThenCompress(final List<File> srcs) {
+        toast("Đang chuẩn bị file qua Shizuku...");
+        new Thread(new Runnable() {
+            @Override public void run() {
+                java.io.File base = getExternalCacheDir();
+                if (base == null) base = getCacheDir();
+                final java.io.File staging =
+                        new java.io.File(base, "compress_staging");
+                deleteRecursive(staging);
+                staging.mkdirs();
+                final List<File> staged = new ArrayList<File>();
+                boolean ok = true;
+                for (File src : srcs) {
+                    String dstPath = staging.getAbsolutePath() + "/"
+                            + src.getName();
+                    if (!ShizukuFileHelper.copy(src.getAbsolutePath(), dstPath)) {
+                        ok = false;
+                        break;
+                    }
+                    staged.add(new java.io.File(dstPath));
+                }
+                final boolean stagedOk = ok;
+                // Ảnh chụp staging trước khi mở dialog nén: file nén là
+                // những file mới xuất hiện sau đó (nhận diện chính xác
+                // kể cả khi user đặt tên zip trùng tên file nguồn, vì
+                // uniqueFile sẽ đổi tên file nén thành tên mới).
+                final java.util.Set<String> beforeNames = new java.util.HashSet<String>();
+                java.io.File[] pre = staging.listFiles();
+                if (pre != null) {
+                    for (java.io.File k : pre) beforeNames.add(k.getName());
+                }
+                final java.io.File originalDir = srcs.isEmpty() ? null
+                        : srcs.get(0).getParentFile();
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (stagedOk && !staged.isEmpty()) {
+                            ArchiveDialogs.showCompress(MainActivity.this,
+                                    staged, staging,
+                                    new Runnable() {
+                                        @Override public void run() {
+                                            if (originalDir != null) {
+                                                pushStagedArchiveBack(staging, beforeNames, originalDir);
+                                            } else {
+                                                toast("Đã nén vào "
+                                                        + staging.getAbsolutePath()
+                                                        + " — dùng Dán để di chuyển");
+                                                loadDir();
+                                            }
+                                        }
+                                    });
+                        } else {
+                            toast("Không chuẩn bị được file: "
+                                    + ShizukuFileHelper.getLastError());
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
+    /**
+     * v1.2-m5-test2: sau khi nén qua staging, tự đẩy file nén về lại
+     * thư mục gốc qua Shizuku (bug 2026-10-25: trước đây file nén nằm
+     * kẹt ở cache, user phải tự Dán). Trùng tên ở đích thì hỏi
+     * "Ghi đè không? Có/Hủy" như luồng Dán; chọn Hủy thì file nén vẫn
+     * nằm ở staging, không mất.
+     */
+    private void pushStagedArchiveBack(final java.io.File staging,
+                                       final java.util.Set<String> beforeNames,
+                                       final java.io.File originalDir) {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                java.io.File[] kids = staging.listFiles();
+                final java.util.List<java.io.File> archives =
+                        new java.util.ArrayList<java.io.File>();
+                if (kids != null) {
+                    for (java.io.File k : kids) {
+                        if (k.isFile() && !beforeNames.contains(k.getName())) {
+                            archives.add(k);
+                        }
+                    }
+                }
+                if (archives.isEmpty()) {
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            toast("Không tìm thấy file nén trong staging: "
+                                    + staging.getAbsolutePath());
+                            loadDir();
+                        }
+                    });
+                    return;
+                }
+                // Kiểm tra trùng tên ở đích (File API không stat được
+                // thư mục data nên phải hỏi shell khi cần Shizuku).
+                final boolean shizukuDst =
+                        ShizukuFileHelper.needsShizuku(originalDir.getAbsolutePath());
+                final java.util.List<String> conflicts = new java.util.ArrayList<String>();
+                for (java.io.File a : archives) {
+                    java.io.File d = new java.io.File(originalDir, a.getName());
+                    if (d.exists() || (shizukuDst && shellExists(d.getAbsolutePath()))) {
+                        conflicts.add(a.getName());
+                    }
+                }
+                if (!conflicts.isEmpty()) {
+                    runOnUiThread(new Runnable() {
+                        @Override public void run() {
+                            StringBuilder msg = new StringBuilder(
+                                    "Thư mục đích đã có sẵn các mục trùng tên:");
+                            for (int i = 0; i < conflicts.size() && i < 5; i++) {
+                                msg.append("\n• ").append(conflicts.get(i));
+                            }
+                            if (conflicts.size() > 5) msg.append("\n• ...");
+                            msg.append("\n\nGhi đè lên các mục này?");
+                            new CatBuilder(MainActivity.this, R.style.DialogTheme)
+                                    .setTitle("Mục đã tồn tại")
+                                    .setMessage(msg.toString())
+                                    .setPositiveButton("Có", new DialogInterface.OnClickListener() {
+                                        @Override public void onClick(DialogInterface d, int w) {
+                                            pushArchivesNow(staging, archives, originalDir, shizukuDst);
+                                        }
+                                    })
+                                    .setNegativeButton("Hủy", new DialogInterface.OnClickListener() {
+                                        @Override public void onClick(DialogInterface d, int w) {
+                                            toast("Đã hủy ghi đè — file nén vẫn ở "
+                                                    + staging.getAbsolutePath());
+                                            loadDir();
+                                        }
+                                    })
+                                    .show();
+                        }
+                    });
+                    return;
+                }
+                pushArchivesNow(staging, archives, originalDir, shizukuDst);
+            }
+        }).start();
+    }
+
+    private void pushArchivesNow(final java.io.File staging,
+                                 final java.util.List<java.io.File> archives,
+                                 final java.io.File originalDir,
+                                 final boolean shizukuDst) {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                String err = null;
+                for (java.io.File a : archives) {
+                    java.io.File d = new java.io.File(originalDir, a.getName());
+                    if (shizukuDst && (shellExists(d.getAbsolutePath()) || d.exists())
+                            && !ShizukuFileHelper.delete(d.getAbsolutePath())) {
+                        err = ShizukuFileHelper.getLastError();
+                        break;
+                    }
+                    if (!shizukuDst && d.exists()) deleteRecursive(d);
+                    if (!ShizukuFileHelper.copy(a.getAbsolutePath(), d.getAbsolutePath())) {
+                        err = ShizukuFileHelper.getLastError();
+                        break;
+                    }
+                }
+                final String pushErr = err;
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (pushErr != null) {
+                            toast("Không đẩy được file nén về thư mục gốc: " + pushErr
+                                    + " — file vẫn ở " + staging.getAbsolutePath());
+                        } else {
+                            deleteRecursive(staging);
+                            toast("Đã nén vào " + originalDir.getAbsolutePath());
+                        }
+                        loadDir();
+                    }
+                });
+            }
+        }).start();
     }
 
     private static void deleteRecursive(java.io.File f) {
@@ -1286,12 +1431,32 @@ public class MainActivity extends Activity {
             rows.add(new ContextMenuDialog.Item("Nén thành...", R.drawable.ic_compress,
                     new ContextMenuDialog.OnAction() {
                         @Override public void run() {
-                            java.util.List<File> one =
-                                    java.util.Collections.singletonList(item.file);
-                            ArchiveDialogs.showCompress(MainActivity.this, one, currentDir,
-                                    new Runnable() {
-                                        @Override public void run() { loadDir(); }
-                                    });
+                            // v1.2-m5-test2: đang chọn nhiều thì nén cả
+                            // selection (bug 2026-10-25: trước đây luôn chỉ
+                            // nén file đang giữ, bỏ qua selection).
+                            java.util.List<File> srcs;
+                            if (selectionMode && !selected.isEmpty()) {
+                                srcs = selectedFiles();
+                                if (srcs.isEmpty()) {
+                                    srcs = java.util.Collections.singletonList(item.file);
+                                } else {
+                                    exitSelectionMode();
+                                }
+                            } else {
+                                srcs = java.util.Collections.singletonList(item.file);
+                            }
+                            // v1.2-m5: file trong vùng Shizuku phải stage ra
+                            // external cache trước (như nén chọn nhiều) —
+                            // trước đây gọi thẳng nên 7zz/ZipUtils không đọc
+                            // được nguồn trong Android/data.
+                            if (needsShizukuOp(srcs)) {
+                                stageShizukuThenCompress(srcs);
+                            } else {
+                                ArchiveDialogs.showCompress(MainActivity.this, srcs, currentDir,
+                                        new Runnable() {
+                                            @Override public void run() { loadDir(); }
+                                        });
+                            }
                         }
                     }));
             rows.add(new ContextMenuDialog.Item("Sao chép", R.drawable.ic_copy,

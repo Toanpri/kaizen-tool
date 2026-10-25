@@ -482,6 +482,63 @@ public class ArchiveDialogs {
     // v1.1-m2: giải nén trực tiếp (không dialog nhập đường dẫn) — kiểu ZArchiver
     // ------------------------------------------------------------------
 
+    /** Callback nhận file nén đã sẵn sàng để đọc (gốc hoặc bản stage). */
+    private interface StagedArchiveCallback {
+        void run(File archive);
+    }
+
+    /**
+     * v1.2-m5: nếu archive nằm trong vùng Shizuku thì copy ra cache bằng
+     * `cat` qua Shizuku (như copyToCache của đường Mở) rồi mới chạy tiếp —
+     * app không đọc trực tiếp được file trong Android/data. Không cần
+     * stage thì chạy ngay với file gốc.
+     */
+    private static void withStagedArchive(final Activity a, final File archiveFile,
+                                          final StagedArchiveCallback cb) {
+        if (archiveFile == null) {
+            cb.run(null);
+            return;
+        }
+        if (!ShizukuHelper.isRunning()
+                || !ShizukuFileHelper.needsShizuku(archiveFile.getAbsolutePath())) {
+            cb.run(archiveFile);
+            return;
+        }
+        Toast.makeText(a, "Đang chuẩn bị file qua Shizuku...",
+                Toast.LENGTH_SHORT).show();
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final java.io.File staged = ShizukuFileHelper.copyToCache(
+                        a, archiveFile.getAbsolutePath(), archiveFile.getName());
+                a.runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (staged != null && staged.exists()) {
+                            cb.run(staged);
+                        } else {
+                            Toast.makeText(a, "Không đọc được file nén: "
+                                    + ShizukuFileHelper.getLastError(),
+                                    Toast.LENGTH_SHORT).show();
+                        }
+                    }
+                });
+            }
+        }).start();
+    }
+
+    /** Bọc onDone để dọn file stage (chỉ khi stage khác file gốc). */
+    private static Runnable wrapStagedDone(final File staged, final File original,
+                                           final Runnable onDone) {
+        return new Runnable() {
+            @Override public void run() {
+                if (staged != null && original != null
+                        && !staged.getAbsolutePath().equals(original.getAbsolutePath())) {
+                    deleteRecursiveQuiet(staged);
+                }
+                if (onDone != null) onDone.run();
+            }
+        };
+    }
+
     /**
      * Giải nén thẳng vào destDir, không hỏi đường dẫn.
      * overwrite=false, password=null (hỏi mật khẩu nếu archive mã hóa).
@@ -489,6 +546,43 @@ public class ArchiveDialogs {
     public static void extractDirect(final Activity a, final File archiveFile, final int kind,
                                      final File destDir, final Runnable onDone) {
         if (a == null || archiveFile == null || destDir == null) return;
+        // v1.2-m5: archive trong vùng Shizuku phải stage ra cache trước
+        // (trước đây chỉ stage phía đích nên bước bung đọc không được).
+        withStagedArchive(a, archiveFile, new StagedArchiveCallback() {
+            @Override public void run(File staged) {
+                extractDirectInner(a, staged, kind, destDir,
+                        wrapStagedDone(staged, archiveFile, onDone));
+            }
+        });
+    }
+
+    /**
+     * v1.2-m5-test3: chống lồng folder + hỏi ghi đè cho cả 3 nút giải nén
+     * (đều qua extractDirect, cả nhánh data lẫn thường): nếu mọi entry
+     * đều nằm dưới 1 thư mục gốc duy nhất mà tên nó trùng tên thư mục
+     * đích thì bỏ tiền tố đó khi bung (zip "a" chứa "a/b/c", giải nén
+     * vào folder "a" -> "a/b/c" chứ không thành "a/a/b/c"). Trùng tên ở
+     * đích thì hỏi "Ghi đè không? Có/Hủy" trước khi bung (trước đây đường
+     * này đè thầm ở data, bỏ qua thầm ở folder thường, không hỏi gì cả).
+     */
+    private static void extractDirectInner(final Activity a, final File archiveFile, final int kind,
+                                           final File destDir, final Runnable onDone) {
+        if (a == null || archiveFile == null || destDir == null) return;
+        final java.util.List<String> allNames = allEntryNames(archiveFile, kind);
+        final String strip = computeTopStrip(allNames, destDir);
+        final java.util.List<String> tops = strippedTops(allNames, strip);
+        askDirectOverwrite(a, tops, destDir, new DirectOverwriteChoice() {
+            @Override public void onProceed(boolean overwrite) {
+                extractDirectInnerGo(a, archiveFile, kind, destDir, strip, allNames, overwrite, onDone);
+            }
+            @Override public void onCancel() { /* hủy hẳn, không đụng vào đích */ }
+        });
+    }
+
+    private static void extractDirectInnerGo(final Activity a, final File archiveFile, final int kind,
+                                             final File destDir, final String strip,
+                                             final java.util.List<String> allNames, final boolean overwrite,
+                                             final Runnable onDone) {
         // v1.2-m1: đích ở vùng Shizuku (Android/data...) — File API không
         // chạm được nên trước đây luôn văng "Không tạo được thư mục đích".
         if (destNeedsShizuku(destDir)) {
@@ -497,12 +591,12 @@ public class ArchiveDialogs {
                     @Override public void onPassword(String pw) {
                         if (pw == null) return;
                         runExtractViaShizuku(a, archiveFile, kind, null, destDir, pw,
-                                "Đã giải nén xong", onDone);
+                                "Đã giải nén xong", onDone, strip);
                     }
                 });
             } else {
                 runExtractViaShizuku(a, archiveFile, kind, null, destDir, null,
-                        "Đã giải nén xong", onDone);
+                        "Đã giải nén xong", onDone, strip);
             }
             return;
         }
@@ -514,23 +608,144 @@ public class ArchiveDialogs {
             @Override public void run() {
                 final ExtractConfig config = new ExtractConfig() {
                     @Override
-                    public void run(final File d, final boolean overwrite, final String password,
+                    public void run(final File d, final boolean ow, final String password,
                                     final FileOps.OpCallback cb, final CancelToken token) {
-                        ArchiveUtils.extractAll(archiveFile, kind, d, overwrite, password, cb, token);
+                        if (!strip.isEmpty() && stripSupported(kind) && !allNames.isEmpty()) {
+                            ArchiveUtils.extractEntries(archiveFile, kind, allNames, d,
+                                    ow, password, strip, cb, token);
+                        } else {
+                            ArchiveUtils.extractAll(archiveFile, kind, d, ow, password, cb, token);
+                        }
                     }
                 };
                 if (ArchiveUtils.needsPassword(archiveFile, kind)) {
                     askPassword(a, new PasswordListener() {
                         @Override public void onPassword(String pw) {
                             if (pw == null) return; // user hủy
-                            startExtract(a, destDir, false, pw, config, "Đã giải nén xong", onDone);
+                            startExtract(a, destDir, overwrite, pw, config, "Đã giải nén xong", onDone);
                         }
                     });
                 } else {
-                    startExtract(a, destDir, false, null, config, "Đã giải nén xong", onDone);
+                    startExtract(a, destDir, overwrite, null, config, "Đã giải nén xong", onDone);
                 }
             }
         });
+    }
+
+    /** Tên mọi entry trong archive, rỗng nếu không liệt kê được. */
+    private static java.util.List<String> allEntryNames(File archiveFile, int kind) {
+        java.util.List<String> out = new java.util.ArrayList<String>();
+        try {
+            java.util.List<ArchiveEntryInfo> es = ArchiveUtils.listEntries(archiveFile, kind);
+            if (es != null) {
+                for (ArchiveEntryInfo e : es) {
+                    if (e != null && e.name != null) out.add(e.name);
+                }
+            }
+        } catch (Exception ignored) {}
+        return out;
+    }
+
+    /**
+     * Tiền tố chống lồng folder: mọi entry đều nằm dưới 1 thư mục gốc
+     * duy nhất mà tên nó trùng tên thư mục đích thì trả "top/", không
+     * đủ điều kiện thì trả "" (giữ nguyên hành vi cũ).
+     */
+    private static String computeTopStrip(java.util.List<String> names, File destDir) {
+        String destName = destDir != null ? destDir.getName() : null;
+        if (destName == null || destName.isEmpty() || names == null || names.isEmpty()) return "";
+        String top = null;
+        for (String raw : names) {
+            if (raw == null) return "";
+            String n = raw;
+            while (n.startsWith("./")) n = n.substring(2);
+            int slash = n.indexOf('/');
+            if (slash <= 0) return ""; // entry ở gốc hoặc tên lạ -> không strip
+            String t = n.substring(0, slash);
+            if (top == null) top = t;
+            else if (!top.equals(t)) return "";
+        }
+        if (top == null || !top.equals(destName)) return "";
+        return top + "/";
+    }
+
+    /** Các mục cấp 1 sẽ xuất hiện ở đích sau khi bỏ tiền tố strip. */
+    private static java.util.List<String> strippedTops(java.util.List<String> names, String strip) {
+        java.util.LinkedHashSet<String> tops = new java.util.LinkedHashSet<String>();
+        if (names != null) {
+            for (String raw : names) {
+                if (raw == null) continue;
+                String n = raw;
+                while (n.startsWith("./")) n = n.substring(2);
+                String rel = ArchiveUtils.stripPrefix(n, strip);
+                if (rel == null || rel.isEmpty()) continue;
+                int slash = rel.indexOf('/');
+                tops.add(slash >= 0 ? rel.substring(0, slash) : rel);
+            }
+        }
+        return new java.util.ArrayList<String>(tops);
+    }
+
+    /** Các định dạng mà luồng bung entry có hỗ trợ stripPrefix. */
+    private static boolean stripSupported(int kind) {
+        return kind == ArchiveUtils.KIND_ZIP || kind == ArchiveUtils.KIND_7Z
+                || kind == ArchiveUtils.KIND_TAR || kind == ArchiveUtils.KIND_REM;
+    }
+
+    /** Lựa chọn ghi đè cho đường giải nén trực tiếp (kèm cờ overwrite). */
+    private interface DirectOverwriteChoice {
+        void onProceed(boolean overwrite);
+        void onCancel();
+    }
+
+    /**
+     * Kiểm tra các mục cấp 1 sẽ xuất hiện ở đích có trùng tên không;
+     * không trùng -> chạy ngay (overwrite=false), trùng -> popup hỏi
+     * "Ghi đè không?": Có -> chạy tiếp (overwrite=true), Hủy -> dừng hẳn.
+     */
+    private static void askDirectOverwrite(final Activity a, final java.util.List<String> tops,
+                                           final File destDir, final DirectOverwriteChoice choice) {
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final boolean shizuku = destNeedsShizuku(destDir);
+                final java.util.List<String> conflicts = new java.util.ArrayList<String>();
+                for (String t : tops) {
+                    boolean exists = shizuku
+                            ? shellPathExists(destDir.getAbsolutePath() + "/" + t)
+                            : new File(destDir, t).exists();
+                    if (exists) conflicts.add(t);
+                }
+                a.runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        if (conflicts.isEmpty()) {
+                            choice.onProceed(false);
+                            return;
+                        }
+                        StringBuilder msg = new StringBuilder(
+                                "Thư mục đích đã có sẵn các mục trùng tên:");
+                        for (int i = 0; i < conflicts.size() && i < 5; i++) {
+                            msg.append("\n• ").append(conflicts.get(i));
+                        }
+                        if (conflicts.size() > 5) msg.append("\n• ...");
+                        msg.append("\n\nGhi đè lên các mục này?");
+                        new CatBuilder(a, R.style.DialogTheme)
+                                .setTitle("Mục đã tồn tại")
+                                .setMessage(msg.toString())
+                                .setPositiveButton("Có", new DialogInterface.OnClickListener() {
+                                    @Override public void onClick(DialogInterface d, int w) {
+                                        choice.onProceed(true);
+                                    }
+                                })
+                                .setNegativeButton("Hủy", new DialogInterface.OnClickListener() {
+                                    @Override public void onClick(DialogInterface d, int w) {
+                                        choice.onCancel();
+                                    }
+                                })
+                                .show();
+                    }
+                });
+            }
+        }).start();
     }
 
     /**
@@ -604,13 +819,26 @@ public class ArchiveDialogs {
                                             final Runnable onDone) {
         if (a == null || archiveFile == null || entryNames == null || entryNames.isEmpty()
                 || destDir == null) return;
-        // v1.2-m1 (theo ý Kazoi): đích đã có mục trùng tên thì HỎI trước
-        // "Ghi đè không?" — Có thì đè, Hủy thì thôi, không tự ý xử lý.
-        resolveEntryOverwrite(a, entryNames, destDir, new OverwriteChoice() {
-            @Override public void onProceed() {
-                doExtractEntriesDirect(a, archiveFile, kind, entryNames, destDir, onDone);
+        // v1.2-m5: stage nguồn như extractDirect (archive trong data thì
+        // bước đọc entry cũng gãy, kể cả khi đích không cần Shizuku).
+        withStagedArchive(a, archiveFile, new StagedArchiveCallback() {
+            @Override public void run(final File staged) {
+                final Runnable done = wrapStagedDone(staged, archiveFile, onDone);
+                // v1.2-m1 (theo ý Kazoi): đích đã có mục trùng tên thì HỎI trước
+                // "Ghi đè không?" — Có thì đè, Hủy thì thôi, không tự ý xử lý.
+                resolveEntryOverwrite(a, entryNames, destDir, new OverwriteChoice() {
+                    @Override public void onProceed() {
+                        doExtractEntriesDirect(a, staged, kind, entryNames, destDir, done);
+                    }
+                    @Override public void onCancel() {
+                        // Hủy hẳn: dọn file stage rồi thôi, không đụng vào đích.
+                        if (staged != null && !staged.getAbsolutePath().equals(
+                                archiveFile.getAbsolutePath())) {
+                            deleteRecursiveQuiet(staged);
+                        }
+                    }
+                });
             }
-            @Override public void onCancel() { /* hủy hẳn, không đụng vào đích */ }
         });
     }
 
@@ -626,12 +854,12 @@ public class ArchiveDialogs {
                     @Override public void onPassword(String pw) {
                         if (pw == null) return;
                         runExtractViaShizuku(a, archiveFile, kind, entryNames, destDir, pw,
-                                "Đã sao chép xong", onDone);
+                                "Đã sao chép xong", onDone, "");
                     }
                 });
             } else {
                 runExtractViaShizuku(a, archiveFile, kind, entryNames, destDir, null,
-                        "Đã sao chép xong", onDone);
+                        "Đã sao chép xong", onDone, "");
             }
             return;
         }
@@ -763,7 +991,8 @@ public class ArchiveDialogs {
     private static void runExtractViaShizuku(final Activity a, final File archiveFile,
                                              final int kind, final List<String> entryNames,
                                              final File destDir, final String password,
-                                             final String successMsg, final Runnable onDone) {
+                                             final String successMsg, final Runnable onDone,
+                                             final String wholeStrip) {
         final boolean whole = entryNames == null;
         runArchiveOp(a, whole ? "Đang giải nén..." : "Đang sao chép...",
                 new Op() {
@@ -791,8 +1020,21 @@ public class ArchiveDialogs {
                             }
                         };
                         if (whole) {
-                            ArchiveUtils.extractAll(archiveFile, kind, staging, true,
-                                    password, stageCb, token);
+                            if (wholeStrip != null && !wholeStrip.isEmpty()
+                                    && stripSupported(kind)) {
+                                java.util.List<String> all = allEntryNames(archiveFile, kind);
+                                if (!all.isEmpty()) {
+                                    ArchiveUtils.extractEntries(archiveFile, kind, all,
+                                            staging, true, password, wholeStrip,
+                                            stageCb, token);
+                                } else {
+                                    ArchiveUtils.extractAll(archiveFile, kind, staging, true,
+                                            password, stageCb, token);
+                                }
+                            } else {
+                                ArchiveUtils.extractAll(archiveFile, kind, staging, true,
+                                        password, stageCb, token);
+                            }
                         } else {
                             ArchiveUtils.extractEntries(archiveFile, kind, entryNames,
                                     staging, true, password,

@@ -433,10 +433,20 @@ public class ShizukuFileHelper {
     }
 
     /**
-     * Kiểm tra thư mục có cần Shizuku không (listFiles thường trả null).
+     * Kiểm tra đường dẫn có cần Shizuku không (listFiles thường trả null).
+     * v1.2-m5-test2: file không có list() (luôn null) nên phải xét theo
+     * thư mục cha — trước đây mọi file đều bị kết luận "cần Shizuku" khi
+     * Shizuku đang chạy, khiến nén ở folder thường cũng bị stage nhầm.
      */
     public static boolean needsShizuku(String path) {
         java.io.File f = new java.io.File(path);
+        if (!f.isDirectory()) {
+            java.io.File parent = f.getParentFile();
+            if (parent == null) {
+                return ShizukuHelper.isRunning() && ShizukuHelper.hasPermission();
+            }
+            f = parent;
+        }
         // Nếu File API đọc được thì không cần Shizuku
         String[] list = f.list();
         if (list != null) return false;
