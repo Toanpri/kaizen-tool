@@ -1,26 +1,26 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.kaizen.tool"
-    android:versionCode="23"
-    android:versionName="1.2-m5">
+    android:versionCode="25"
+    android:versionName="1.2-m6">
 
-    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="30" />
+    <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34" />
 
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" />
-    <!-- Android 13+: cần để hiện notification tiến trình (targetSdk 30 được auto-grant) -->
+    <!-- Android 13+: notification tien trinh can quyen runtime (tu targetSdk 33) — app xin luc khoi dong, xem onCreate -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <!-- BẮT BUỘC cho Shizuku: server chỉ gửi binder cho app khai báo quyền này -->
     <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 
     <application
-        android:label="Kaizen Tool"
+        android:label="kz tool"
         android:icon="@drawable/ic_launcher"
         android:theme="@style/AppTheme"
-        android:requestLegacyExternalStorage="true">
+        android:allowBackup="false">
 
         <!-- BẮT BUỘC để hiện trong danh sách Shizuku -->
         <meta-data
@@ -37,13 +37,13 @@
         </activity>
 
         <!-- M5: Settings + About -->
-        <activity android:name=".SettingsActivity" />
-        <activity android:name=".AboutActivity" />
+        <activity android:name=".SettingsActivity" android:exported="false" />
+        <activity android:name=".AboutActivity" android:exported="false" />
 
         <!-- In-app media viewer -->
-        <activity android:name=".ImageViewerActivity" />
-        <activity android:name=".VideoPlayerActivity" />
-        <activity android:name=".AudioPlayerActivity" />
+        <activity android:name=".ImageViewerActivity" android:exported="false" />
+        <activity android:name=".VideoPlayerActivity" android:exported="false" />
+        <activity android:name=".AudioPlayerActivity" android:exported="false" />
 
         <provider
             android:name=".ApkFileProvider"

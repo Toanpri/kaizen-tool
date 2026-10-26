@@ -115,8 +115,10 @@ public class RootFileProvider {
     public static List<FileItem> listDir(String absPath) throws SecurityException {
         String path = sanitize(absPath);
         // -L: dereference symlinks so the type reflects the target (one command).
+        // Pentest 26/10: "--" de thu muc ten bat dau "-" khong bi ls
+        // hieu nham la option.
         RootShell.ShellResult r = RootShell.execPreferred(
-                new String[]{"ls", "-laL", path});
+                new String[]{"ls", "-laL", "--", path});
         if (!r.ok()) {
             String err = r.stderr.trim();
             if (err.isEmpty()) err = r.stdout.trim();

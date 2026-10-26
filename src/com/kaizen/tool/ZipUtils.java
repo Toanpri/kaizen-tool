@@ -1161,6 +1161,7 @@ public class ZipUtils {
         String name;
         int method;
         long compSize;
+        long uncompSize;
         long localOff;
         boolean isDir;
     }
@@ -1199,6 +1200,7 @@ public class ZipUtils {
             e.name = new String(nameB, "UTF-8");
             e.method = readLeShort(h, 10);
             e.compSize = readLeInt(h, 20);
+            e.uncompSize = readLeInt(h, 24);
             e.localOff = readLeInt(h, 42);
             e.isDir = e.name.endsWith("/");
             out.add(e);
@@ -1206,11 +1208,40 @@ public class ZipUtils {
         return out;
     }
 
+    /** OutputStream gioi han so byte ghi (chong zip-bomb). Vuot cap -> IOException. */
+    private static class CappedOutputStream extends java.io.OutputStream {
+        private final java.io.OutputStream out;
+        private final long cap;
+        private long written;
+
+        CappedOutputStream(java.io.OutputStream out, long cap) {
+            this.out = out;
+            this.cap = cap;
+        }
+
+        @Override public void write(int b) throws java.io.IOException {
+            if (written + 1 > cap) throw new java.io.IOException("Vượt giới hạn kích thước");
+            out.write(b);
+            written++;
+        }
+
+        @Override public void write(byte[] b, int off, int len) throws java.io.IOException {
+            if (written + len > cap) throw new java.io.IOException("Vượt giới hạn kích thước");
+            out.write(b, off, len);
+            written += len;
+        }
+
+        @Override public void flush() throws java.io.IOException { out.flush(); }
+        @Override public void close() throws java.io.IOException { out.close(); }
+    }
+
     private static String extractAesEntry(java.io.RandomAccessFile raf, CdEntry e,
                                            File destDir, String destCanon, boolean overwrite,
                                            String password, CancelToken token) {
+        File out = null;
+        boolean opened = false;
         try {
-            File out = new File(destDir, e.name);
+            out = new File(destDir, e.name);
             String outCanon = out.getCanonicalPath();
             if (!outCanon.startsWith(destCanon)) return "Bỏ qua (ngoài thư mục đích): " + e.name;
             if (e.isDir) {
@@ -1233,27 +1264,49 @@ public class ZipUtils {
             long dataOff = e.localOff + 30 + nameLen + extraLen;
             raf.seek(dataOff);
 
+            // Pentest 26/10: cap output giong duong ZIP thuong
+            // (declared + max(64MB, declared)) — duong AES truoc day
+            // khong co cap nen entry khai gian co the inflate day bo nho.
+            // declared <= 0 (writer khong ghi) thi khong cap duoc, van
+            // giu hanh vi cu thay vi fail oan.
+            long declared = e.uncompSize;
+            long cap = declared <= 0 ? Long.MAX_VALUE
+                    : declared + Math.max(67108864L, declared);
             java.io.OutputStream os = null;
+            String writeErr = null;
             try {
-                os = new java.io.BufferedOutputStream(new FileOutputStream(out), BUFFER_SIZE);
+                os = new CappedOutputStream(
+                        new java.io.BufferedOutputStream(new FileOutputStream(out), BUFFER_SIZE),
+                        cap);
+                opened = true;
                 if (e.method == AES_METHOD) {
                     if (password == null || password.isEmpty()) {
-                        return "File được mã hóa — cần mật khẩu: " + e.name;
+                        writeErr = "File được mã hóa — cần mật khẩu: " + e.name;
+                    } else {
+                        String err = decryptAesEntry(raf, e.compSize, password, os, token);
+                        if (err != null) writeErr = err + ": " + e.name;
                     }
-                    String err = decryptAesEntry(raf, e.compSize, password, os, token);
-                    if (err != null) return err + ": " + e.name;
                 } else if (e.method == 8) {
                     inflateFromRaf(raf, e.compSize, os, token);
                 } else if (e.method == 0) {
                     copyFromRaf(raf, e.compSize, os, token);
                 } else {
-                    return "Phương thức nén không hỗ trợ (" + e.method + "): " + e.name;
+                    writeErr = "Phương thức nén không hỗ trợ (" + e.method + "): " + e.name;
                 }
             } finally {
                 closeQuietly(os);
             }
+            if (writeErr != null) {
+                // Pentest 26/10: xoa file do khi loi/huy (giong duong RAR),
+                // tranh de lai file rac nua voi trong dich.
+                out.delete();
+                return writeErr;
+            }
             return null;
         } catch (Exception ex) {
+            // Chi xoa khi da mo stream (da truncate/ghi) — loi truoc khi
+            // mo (header, ...) thi khong dong vao file cu cua user.
+            if (opened && out != null) out.delete();
             return "Giải nén thất bại: " + e.name + " — " + msg(ex);
         }
     }

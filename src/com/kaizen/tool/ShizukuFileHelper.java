@@ -433,6 +433,24 @@ public class ShizukuFileHelper {
     }
 
     /**
+     * v1.2-m6: Tạo file rỗng qua Shizuku (touch). Dùng cho luồng tạo
+     * mới trong Android/data (FileOps.createFile bằng java.io không
+     * có quyền ghi ở đó). touch lên file đã có chỉ đổi mtime, không
+     * cắt dữ liệu — an toàn, idempotent như mkdir -p (tạo trùng tên
+     * qua Shizuku sẽ báo thành công + refresh, khác nhánh thường báo
+     * "đã tồn tại" — chấp nhận được vì thứ cần tạo đã ở đó).
+     */
+    public static boolean touch(String path) {
+        String out = runCommand("touch", path);
+        if (out != null && out.startsWith("ERROR:")) {
+            sLastError = out;
+            return false;
+        }
+        sLastError = null;
+        return true;
+    }
+
+    /**
      * Kiểm tra đường dẫn có cần Shizuku không (listFiles thường trả null).
      * v1.2-m5-test2: file không có list() (luôn null) nên phải xét theo
      * thư mục cha — trước đây mọi file đều bị kết luận "cần Shizuku" khi

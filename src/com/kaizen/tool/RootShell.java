@@ -116,11 +116,42 @@ public class RootShell {
             StreamGobbler err = new StreamGobbler(proc.getErrorStream());
             out.start();
             err.start();
-            int code = proc.waitFor();
+            // Pentest 26/10: waitFor() cu khong co timeout — lenh ket
+            // thi treo vinh vien, cancel cung khong ngat duoc. Khong
+            // poll exitValue() duoc vi ban Shizuku tra -1 ca khi dang
+            // chay (khong nem IllegalThreadStateException) — nen chay
+            // waitFor() tren thread rieng va join co deadline, het han
+            // thi destroy va tra -1 (giong execRaw).
+            final int[] codeBox = new int[]{-2}; // -2 = chua xong
+            Thread waiter = new Thread(new Runnable() {
+                @Override public void run() {
+                    codeBox[0] = proc.waitFor();
+                }
+            });
+            waiter.setDaemon(true);
+            waiter.start();
             long deadline = System.currentTimeMillis() + timeoutMs;
+            while (codeBox[0] == -2) {
+                long remain = deadline - System.currentTimeMillis();
+                if (remain <= 0) {
+                    try { proc.destroy(); } catch (Exception ignored) {}
+                    joinQuietly(out, 1000);
+                    joinQuietly(err, 1000);
+                    return new ShellResult(-1, out.result(), "timeout");
+                }
+                try {
+                    waiter.join(remain);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    try { proc.destroy(); } catch (Exception ignored) {}
+                    joinQuietly(out, 1000);
+                    joinQuietly(err, 1000);
+                    return new ShellResult(-1, out.result(), "interrupted");
+                }
+            }
             joinQuietly(out, Math.max(1, deadline - System.currentTimeMillis()));
             joinQuietly(err, Math.max(1, deadline - System.currentTimeMillis()));
-            return new ShellResult(code, out.result(), err.result());
+            return new ShellResult(codeBox[0], out.result(), err.result());
         } finally {
             proc.destroy();
         }

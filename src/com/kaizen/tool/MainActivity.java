@@ -56,6 +56,7 @@ import java.util.Stack;
 public class MainActivity extends Activity {
 
     private static final int REQ_STORAGE = 100;
+    private static final int REQ_NOTIFY = 101;
 
     private static final String PREFS_BOOKMARKS = "kaizen_bookmarks";
 
@@ -191,6 +192,43 @@ public class MainActivity extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         ZipUtils.init(this); // 20/10: cho native fallback khi ZIP dùng method lạ (XZ=95...)
+
+        // Pentest 26/10: don ban staged cua cac lan mo truoc (file doc
+        // bang quyen cao tu vung dac quyen: cache/shizuku + root_*).
+        // Luc khoi dong khong co viewer nao dang giu chung nen xoa an
+        // toan; ban staged cua lan mo hien tai se bi don o lan khoi
+        // dong sau (VIEW intent khong tra result de xoa ngay duoc).
+        new Thread(new Runnable() {
+            @Override public void run() {
+                try {
+                    java.io.File shizukuCache =
+                            new java.io.File(getCacheDir(), "shizuku");
+                    if (shizukuCache.isDirectory()) {
+                        java.io.File[] kids = shizukuCache.listFiles();
+                        if (kids != null) {
+                            for (java.io.File k : kids) deleteRecursive(k);
+                        }
+                    }
+                    java.io.File[] cacheKids = getCacheDir().listFiles();
+                    if (cacheKids != null) {
+                        for (java.io.File k : cacheKids) {
+                            if (k.getName().startsWith("root_")) deleteRecursive(k);
+                        }
+                    }
+                } catch (Exception ignored) {}
+            }
+        }).start();
+
+        // Pentest 26/10 + targetSdk 34: tu Android 13, POST_NOTIFICATIONS
+        // la quyen runtime — khong xin thi notification tien trinh (nen /
+        // giai nen / copy) im lang mat. Tu choi cung khong sao, chi mat
+        // notification (onRequestPermissionsResult bo qua code nay).
+        if (Build.VERSION.SDK_INT >= 33 && checkSelfPermission(
+                Manifest.permission.POST_NOTIFICATIONS)
+                != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{Manifest.permission.POST_NOTIFICATIONS},
+                    REQ_NOTIFY);
+        }
 
         listView = (ListView) findViewById(R.id.file_list);
         emptyView = (TextView) findViewById(R.id.empty_view);
@@ -1491,6 +1529,8 @@ public class MainActivity extends Activity {
                     new ContextMenuDialog.OnAction() {
                         @Override public void run() {
                             Dialogs.showRename(MainActivity.this, item.file,
+                                    ShizukuFileHelper.needsShizuku(
+                                            item.file.getAbsolutePath()),
                                     new Runnable() {
                                         @Override public void run() { loadDir(); }
                                     });
@@ -1641,7 +1681,7 @@ public class MainActivity extends Activity {
                                 if (mt >= 0) {
                                     openMediaViewer(cached, mt);
                                 } else {
-                                    openFile(cached);
+                                    openElevatedFile(cached, item.name);
                                 }
                             } else {
                                 toast("Không đọc được file: "
@@ -2464,6 +2504,31 @@ public class MainActivity extends Activity {
         }
     }
 
+    /**
+     * Pentest 26/10: mo file staged tu vung dac quyen bang app ngoai —
+     * canh bao ro rang truoc khi dua ban copy cho app khac (app nhan se
+     * doc duoc toan bo noi dung). Huy thi xoa ngay ban staged.
+     */
+    private void openElevatedFile(final java.io.File staged, final String displayName) {
+        new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("Mở file đặc quyền")
+                .setMessage("File \"" + displayName + "\" nằm ở thư mục đặc quyền "
+                        + "và chỉ đọc được nhờ quyền cao (root/Shizuku).\n\n"
+                        + "Bản copy sẽ được đưa cho app ngoài — app đó sẽ đọc "
+                        + "được toàn bộ nội dung. Vẫn mở?")
+                .setPositiveButton("Mở", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        openFile(staged);
+                    }
+                })
+                .setNegativeButton("Hủy", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        deleteRecursive(staged);
+                    }
+                })
+                .show();
+    }
+
     /** M5: đọc file hệ thống ra cache qua shell rồi mở bằng app khác. */
     private void openRootFile(final String realPath, final String name) {
         toast("Đang đọc " + name + "...");
@@ -2480,7 +2545,7 @@ public class MainActivity extends Activity {
                 runOnUiThread(new Runnable() {
                     @Override public void run() {
                         if (ok) {
-                            openFile(dst);
+                            openElevatedFile(dst, name);
                         } else {
                             toast("Không mở được file"
                                     + (err.isEmpty() ? "" : ": " + err));
@@ -2856,6 +2921,7 @@ public class MainActivity extends Activity {
         final String prefix = archiveDir;
         final boolean root = isRootMode();
         final File dst = currentDir;
+        final String rdst = rootDir;
         new Thread(new Runnable() {
             @Override public void run() {
                 final List<String> conflicts = new ArrayList<String>();
@@ -2885,6 +2951,17 @@ public class MainActivity extends Activity {
                             if (samePath(s, d)) continue;
                             if (d.exists() || (shizuku
                                     && shellExists(d.getAbsolutePath()))) {
+                                conflicts.add(s.getName());
+                            }
+                        }
+                    } else if (root && rdst != null) {
+                        // Pentest 26/10: root mode truoc day khong qua cong
+                        // hoi ghi de — kiem tra trung bang shell (dich that
+                        // cua doPasteRoot la rootDir).
+                        for (File s : srcs) {
+                            File d = new File(rdst, s.getName());
+                            if (samePath(s, d)) continue;
+                            if (rootExists(d.getAbsolutePath())) {
                                 conflicts.add(s.getName());
                             }
                         }
@@ -2927,6 +3004,16 @@ public class MainActivity extends Activity {
         }
     }
 
+    private static boolean rootExists(String path) {
+        try {
+            RootShell.ShellResult r = RootShell.execPreferred(
+                    new String[]{"ls", "-d", path});
+            return r.ok();
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
     private static boolean shellExists(String path) {
         try {
             String r = ShizukuFileHelper.runCommand("ls", "-d", path);
@@ -2944,7 +3031,7 @@ public class MainActivity extends Activity {
             return;
         }
         if (isRootMode()) {
-            doPasteRoot(count, clipboardCut);
+            doPasteRoot(count, clipboardCut, overwrite);
             return;
         }
         final List<File> srcs = new ArrayList<File>(clipboard);
@@ -3393,7 +3480,7 @@ public class MainActivity extends Activity {
      * M5: dán (copy/cut) các file thường vào thư mục hệ thống qua shell
      * (cp -r / mv với quyền Shizuku/su).
      */
-    private void doPasteRoot(final int count, final boolean cut) {
+    private void doPasteRoot(final int count, final boolean cut, final boolean overwrite) {
         final java.util.List<File> srcs = new java.util.ArrayList<File>(clipboard);
         final String dst = rootDir;
         runOpWithProgress(cut ? "Đang di chuyển..." : "Đang sao chép...",
@@ -3403,6 +3490,19 @@ public class MainActivity extends Activity {
                         int done = 0;
                         for (File s : srcs) {
                             cb.onProgress(done, srcs.size(), s.getName());
+                            if (overwrite) {
+                                // User da chon ghi de: xoa ban cu o dich
+                                // truoc, tranh cp/mv long them tang vao thu
+                                // muc co san (giong pasteViaShizuku). Xoa
+                                // that bai thi dung lai chu khong dan de.
+                                RootShell.ShellResult dr = RootShell.execPreferred(
+                                        new String[]{"rm", "-rf",
+                                                dst + "/" + s.getName()});
+                                if (!dr.ok()) {
+                                    cb.onDone(false, "Không xóa được bản cũ: " + s.getName());
+                                    return;
+                                }
+                            }
                             String cmd = (cut ? "mv " : "cp -r ")
                                     + RootShell.quote(s.getAbsolutePath()) + " "
                                     + RootShell.quote(dst + "/");
@@ -3586,7 +3686,11 @@ public class MainActivity extends Activity {
                         if (isRootMode()) {
                             rootMkdir(); // M5: tạo thư mục hệ thống qua shell
                         } else {
+                            // v1.2-m6: thư mục cần Shizuku (data/obb)
+                            // thì mkdir qua shell Shizuku, java.io
+                            // không có quyền ghi ở đó.
                             Dialogs.showNewFolder(MainActivity.this, currentDir,
+                                    currentDir != null && ShizukuFileHelper.needsShizuku(currentDir.getAbsolutePath()),
                                     new Runnable() {
                                         @Override public void run() { loadDir(); }
                                     });
@@ -3597,7 +3701,9 @@ public class MainActivity extends Activity {
                         if (isRootMode()) {
                             rootTouch(); // M5: tạo file hệ thống qua shell
                         } else {
+                            // v1.2-m6: như NEW_FOLDER nhưng touch file.
                             Dialogs.showNewFile(MainActivity.this, currentDir,
+                                    currentDir != null && ShizukuFileHelper.needsShizuku(currentDir.getAbsolutePath()),
                                     new Runnable() {
                                         @Override public void run() { loadDir(); }
                                     });

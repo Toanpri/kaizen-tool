@@ -280,9 +280,72 @@ public class Native7z {
         }
     }
 
+    /** true neu f la symlink (check thuan Java, chay duoc tu API 21). */
+    private static boolean isSymlink(File f) {
+        try {
+            File parent = f.getParentFile();
+            if (parent == null) return false;
+            File canonDir = parent.getCanonicalFile();
+            File canonFile = f.getCanonicalFile();
+            return !new File(canonDir, f.getName()).equals(canonFile);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** true neu name co segment dung bang ".." (tach theo '/'). */
+    private static boolean hasDotDotSegment(String name) {
+        for (String seg : name.split("/")) {
+            if ("..".equals(seg)) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Pentest 26/10: duyet cay outRoot, xoa moi symlink va moi path co
+     * canonical nam ngoai outRoot. Tra so entry da xoa.
+     */
+    private static int purgeUnsafe(File root) {
+        int[] removed = new int[1];
+        String base;
+        try {
+            base = root.getCanonicalPath();
+        } catch (Exception e) {
+            return 0;
+        }
+        purgeUnsafeWalk(root, base, removed);
+        return removed[0];
+    }
+
+    private static void purgeUnsafeWalk(File dir, String base, int[] removed) {
+        File[] kids = dir.listFiles();
+        if (kids == null) return;
+        for (File k : kids) {
+            try {
+                if (isSymlink(k)) {
+                    if (k.delete()) removed[0]++;
+                    continue;
+                }
+                String canon = k.getCanonicalPath();
+                if (!canon.equals(base) && !canon.startsWith(base + File.separator)) {
+                    deleteRecursiveSync(k);
+                    removed[0]++;
+                    continue;
+                }
+                if (k.isDirectory()) purgeUnsafeWalk(k, base, removed);
+            } catch (Exception ignored) {}
+        }
+    }
+
     /** Xóa đệ quy đồng bộ (dọn staging). */
     private static void deleteRecursiveSync(File f) {
         if (f == null || !f.exists()) return;
+        // Pentest 26/10: khong follow symlink — xoa chinh link, khong
+        // xoa noi dung dich (nguy hiem nhat khi don tmpDir sau giai nen).
+        if (isSymlink(f)) {
+            try { f.delete(); } catch (Exception ignored) {}
+            return;
+        }
         if (f.isDirectory()) {
             File[] kids = f.listFiles();
             if (kids != null) {
@@ -790,17 +853,40 @@ public class Native7z {
             cmd.add("-bse2");
             cmd.add("-scsUTF-8");
             cmd.add(zipFile.getAbsolutePath());
+            // Pentest 26/10: guard ten entry truoc khi dua cho 7zz (giong
+            // duong nen): ten bat dau -/@ -> prefix ./ ; entry co segment
+            // .. thi bo qua. Neu loc xong khong con entry nao thi bao loi
+            // chu khong chay 7zz "khong ten" (no se bung toan bo archive,
+            // sai ngu nghia entry da chon).
+            java.util.List<String> safeNames = new java.util.ArrayList<String>();
             if (entryNames != null) {
                 for (String nm : entryNames) {
-                    if (nm != null && nm.length() > 0) cmd.add(nm);
+                    if (nm == null || nm.length() == 0) continue;
+                    if (hasDotDotSegment(nm)) continue;
+                    if (nm.startsWith("-") || nm.startsWith("@")) nm = "./" + nm;
+                    safeNames.add(nm);
+                }
+                if (!entryNames.isEmpty() && safeNames.isEmpty()) {
+                    if (tmpDir != null) deleteRecursiveSync(tmpDir);
+                    return "Không có entry hợp lệ để giải nén";
                 }
             }
+            for (String nm : safeNames) cmd.add(nm);
             File workDir = zipFile.getParentFile();
             if (workDir == null) workDir = new File(".");
             String r = runOnce(cmd, workDir, 0, 1, cb, token);
             if (r != null) {
                 if (tmpDir != null) deleteRecursiveSync(tmpDir);
                 return r;
+            }
+            // Pentest 26/10: 7zz khong co validation phia app — duyet
+            // outRoot, xoa symlink va moi path thoat khoi outRoot truoc
+            // khi doi len (strip) hoac tra ket qua. Entry bi loai chi bao
+            // qua progress, khong fail ca lan giai nen (giong duong Java).
+            int removed = purgeUnsafe(outRoot);
+            if (removed > 0) {
+                progress(cb, 100, 0, 1, "Đã loại bỏ " + removed
+                        + " entry không an toàn (symlink/thoát thư mục đích)");
             }
             if (useStrip) {
                 File inner = new File(tmpDir, stripPrefix);
@@ -820,6 +906,9 @@ public class Native7z {
         File[] kids = srcDir.listFiles();
         if (kids == null) return null;
         for (File k : kids) {
+            // Pentest 26/10: khong bao gio follow symlink khi doi len —
+            // symlink noi bo cung co the tao vong lap (link -> chinh no).
+            if (isSymlink(k)) continue;
             File target = new File(dstDir, k.getName());
             if (k.isDirectory()) {
                 if (!target.exists() && !target.mkdirs()) {

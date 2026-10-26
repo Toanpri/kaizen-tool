@@ -25,7 +25,18 @@ public class Dialogs {
     // ------------------------------------------------------------------
 
     public static void showRename(final Activity a, final File f, final Runnable onDone) {
-        if (a == null || f == null || !f.exists()) return;
+        showRename(a, f, false, onDone);
+    }
+
+    // Pentest 26/10 (cung ho voi bug create m6): viaShizuku=true khi item
+    // nam trong thu muc can Shizuku (Android/data, obb) — java.io khong
+    // thay file o do nen guard exists() cu lam dialog khong mo, va
+    // FileOps.rename cung fail o do. Doi ten qua mv cua Shizuku.
+    // Luu y: f.isFile() tra false voi path Shizuku (khong stat duoc)
+    // nen phan chon ten se chon ca ten thay vi tru phan mo rong.
+    public static void showRename(final Activity a, final File f, final boolean viaShizuku, final Runnable onDone) {
+        if (a == null || f == null) return;
+        if (!viaShizuku && !f.exists()) return;
         final String current = f.getName();
         final EditText input = makeInput(a, current);
         // pre-fill current name, select the part before the extension
@@ -46,7 +57,16 @@ public class Dialogs {
                             Toast.makeText(a, err, Toast.LENGTH_SHORT).show();
                             return;
                         }
-                        if (!FileOps.rename(f, newName)) {
+                        boolean ok;
+                        if (viaShizuku) {
+                            String parent = f.getParent();
+                            ok = parent != null && ShizukuFileHelper.move(
+                                    f.getAbsolutePath(),
+                                    new File(parent, newName).getAbsolutePath());
+                        } else {
+                            ok = FileOps.rename(f, newName);
+                        }
+                        if (!ok) {
                             Toast.makeText(a, "Đổi tên thất bại (có thể tên đã tồn tại)", Toast.LENGTH_SHORT).show();
                             return;
                         }
@@ -58,6 +78,14 @@ public class Dialogs {
     }
 
     public static void showNewFolder(final Activity a, final File parent, final Runnable onDone) {
+        showNewFolder(a, parent, false, onDone);
+    }
+
+    // v1.2-m6: viaShizuku=true khi thư mục hiện tại cần Shizuku
+    // (Android/data, obb): mkdir qua shell Shizuku thay vì java.io
+    // (không có quyền ghi ở đó). Chạy đồng bộ trong onClick như
+    // nhánh thường — chỉ 1 lệnh shell nhanh, cùng pattern FileOps.
+    public static void showNewFolder(final Activity a, final File parent, final boolean viaShizuku, final Runnable onDone) {
         if (a == null || parent == null) return;
         final EditText input = makeInput(a, "Thư mục mới");
 
@@ -73,7 +101,13 @@ public class Dialogs {
                             Toast.makeText(a, err, Toast.LENGTH_SHORT).show();
                             return;
                         }
-                        if (!FileOps.mkdir(parent, name)) {
+                        boolean ok;
+                        if (viaShizuku) {
+                            ok = ShizukuFileHelper.mkdir(new File(parent, name).getAbsolutePath());
+                        } else {
+                            ok = FileOps.mkdir(parent, name);
+                        }
+                        if (!ok) {
                             Toast.makeText(a, "Tạo thư mục thất bại (có thể đã tồn tại)", Toast.LENGTH_SHORT).show();
                             return;
                         }
@@ -85,6 +119,13 @@ public class Dialogs {
     }
 
     public static void showNewFile(final Activity a, final File parent, final Runnable onDone) {
+        showNewFile(a, parent, false, onDone);
+    }
+
+    // v1.2-m6: viaShizuku=true khi thư mục hiện tại cần Shizuku
+    // (Android/data, obb): touch qua shell Shizuku thay vì java.io
+    // (không có quyền ghi ở đó). Xem ghi chú ở showNewFolder.
+    public static void showNewFile(final Activity a, final File parent, final boolean viaShizuku, final Runnable onDone) {
         if (a == null || parent == null) return;
         final EditText input = makeInput(a, "tệp mới.txt");
 
@@ -100,7 +141,13 @@ public class Dialogs {
                             Toast.makeText(a, err, Toast.LENGTH_SHORT).show();
                             return;
                         }
-                        if (!FileOps.createFile(parent, name)) {
+                        boolean ok;
+                        if (viaShizuku) {
+                            ok = ShizukuFileHelper.touch(new File(parent, name).getAbsolutePath());
+                        } else {
+                            ok = FileOps.createFile(parent, name);
+                        }
+                        if (!ok) {
                             Toast.makeText(a, "Tạo tệp thất bại (có thể đã tồn tại)", Toast.LENGTH_SHORT).show();
                             return;
                         }
@@ -365,7 +412,12 @@ public class Dialogs {
         LinearLayout wrap = new LinearLayout(a);
         int p = dp(a, 16);
         wrap.setPadding(p, dp(a, 8), p, dp(a, 4));
-        wrap.addView(input);
+        // 26/10 (feedback Kazoi, dialog Doi ten): EditText mac dinh
+        // WRAP_CONTENT nen gach chan chi om theo chu ("b" = 1 ky tu
+        // -> vung bam ti hon, kho sua ten). Cho full width dialog.
+        wrap.addView(input, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
         return wrap;
     }
 

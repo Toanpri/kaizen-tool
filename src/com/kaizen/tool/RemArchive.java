@@ -410,22 +410,37 @@ public class RemArchive {
                         // mục cha của lựa chọn (xem ArchiveUtils.stripPrefix).
                         String outName = ArchiveUtils.stripPrefix(h.name, stripPrefix);
                         if (outName == null || outName.isEmpty()) outName = h.name;
+                        String shown = displayName(h.name);
                         if (!wanted || !safe) {
                             skipFully(dis, h.compSize, buf); // vẫn phải đọc qua để giữ vị trí stream
                         } else if (h.isDir) {
-                            new File(destDir, outName).mkdirs();
-                            extracted++;
+                            File target = new File(destDir, outName);
+                            // Pentest 26/10: isSafeName chi chan ten, khong
+                            // chan symlink cam san trong dich -> kiem tra
+                            // canonical truoc khi mkdirs.
+                            if (isWithinDir(target, destDir)) {
+                                target.mkdirs();
+                                extracted++;
+                            } else {
+                                shown = "Bỏ qua (không an toàn): " + shown;
+                            }
                         } else {
                             File target = new File(destDir, outName);
-                            // isSafeName đã chặn "../" và đường dẫn tuyệt đối
-                            // nên target luôn nằm trong destDir
-                            target.getParentFile().mkdirs();
-                            File finalTarget = overwrite ? target : uniqueFile(target);
-                            extractOneEntry(dis, h, finalTarget, token, buf);
-                            extracted++;
+                            // Pentest 26/10: nhu tren — symlink cam san co
+                            // the dan target ra ngoai dich; entry vi pham
+                            // thi bo qua (van doc qua stream de giu vi tri).
+                            if (!isWithinDir(target, destDir)) {
+                                shown = "Bỏ qua (không an toàn): " + shown;
+                                skipFully(dis, h.compSize, buf);
+                            } else {
+                                target.getParentFile().mkdirs();
+                                File finalTarget = overwrite ? target : uniqueFile(target);
+                                extractOneEntry(dis, h, finalTarget, token, buf);
+                                extracted++;
+                            }
                         }
                         doneCount++;
-                        progress(cb, doneCount, total, displayName(h.name));
+                        progress(cb, doneCount, total, shown);
                     }
 
                     if (filter != null && extracted == 0) {
@@ -805,6 +820,20 @@ public class RemArchive {
         String a = ancestor.getAbsolutePath() + File.separator;
         String c = child.getAbsolutePath();
         return c.equals(ancestor.getAbsolutePath()) || c.startsWith(a);
+    }
+
+    /**
+     * Pentest 26/10: true neu target SAU KHI RESOLVE SYMLINK nam trong
+     * destDir. Khac isInside (chi dung absolute path, khong thay symlink).
+     */
+    private static boolean isWithinDir(File target, File destDir) {
+        try {
+            String base = destDir.getCanonicalPath() + File.separator;
+            String canon = target.getCanonicalPath();
+            return canon.startsWith(base);
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     /** Tên file duy nhất nếu đã tồn tại (giống ZipUtils.uniqueFile). */

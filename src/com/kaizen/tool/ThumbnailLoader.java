@@ -273,13 +273,33 @@ public class ThumbnailLoader {
                 }
             }
             if (iconEntry != null) {
-                java.io.InputStream in = null;
+                // Pentest 26/10: decode 2 buoc co bounds/sample nhu duong
+                // thumbnail chinh — icon APK khung co the OOM khi duyet
+                // thu muc. Khong dung RGB_565 o day (icon can alpha).
+                BitmapFactory.Options bounds = new BitmapFactory.Options();
+                bounds.inJustDecodeBounds = true;
+                java.io.InputStream bin = null;
                 try {
-                    in = zip.getInputStream(iconEntry);
-                    Bitmap b = BitmapFactory.decodeStream(in);
-                    if (b != null) return b;
+                    bin = zip.getInputStream(iconEntry);
+                    BitmapFactory.decodeStream(bin, null, bounds);
+                } catch (OutOfMemoryError e) {
+                    return null;
                 } finally {
-                    if (in != null) try { in.close(); } catch (Exception ignored) { }
+                    if (bin != null) try { bin.close(); } catch (Exception ignored) { }
+                }
+                if (bounds.outWidth > 0 && bounds.outHeight > 0) {
+                    BitmapFactory.Options opts = new BitmapFactory.Options();
+                    opts.inSampleSize = calcSampleSize(bounds.outWidth, bounds.outHeight);
+                    java.io.InputStream in = null;
+                    try {
+                        in = zip.getInputStream(iconEntry);
+                        Bitmap b = BitmapFactory.decodeStream(in, null, opts);
+                        if (b != null) return b;
+                    } catch (OutOfMemoryError e) {
+                        return null;
+                    } finally {
+                        if (in != null) try { in.close(); } catch (Exception ignored) { }
+                    }
                 }
             }
             java.util.zip.ZipEntry pick = baseEntry != null ? baseEntry : largestEntry;
