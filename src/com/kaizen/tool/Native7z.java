@@ -607,6 +607,9 @@ public class Native7z {
             proc = new ProcessBuilder(cmd)
                     .directory(workDir)
                     .redirectErrorStream(false)
+                    // 27/10: stdin lay tu /dev/null — 7zz can mat khau ma khong co
+                    // -p se gap EOF va thoat bao loi ngay, thay vi cho nhap mai.
+                    .redirectInput(new File("/dev/null"))
                     .start();
             final Process p = proc;
 
@@ -826,6 +829,18 @@ public class Native7z {
             List<String> entryNames, File destDir, boolean overwrite,
             String stripPrefix,
             FileOps.OpCallback cb, CancelToken token) {
+        return extractZipSync(ctx, zipFile, entryNames, destDir, overwrite,
+                stripPrefix, null, cb, token);
+    }
+
+    /**
+     * Nhu tren, them mat khau (null/rong = khong dung -p).
+     * @return null nếu thành công, ngược lại là message lỗi.
+     */
+    public static String extractZipSync(Context ctx, File zipFile,
+            List<String> entryNames, File destDir, boolean overwrite,
+            String stripPrefix, String password,
+            FileOps.OpCallback cb, CancelToken token) {
         File binary = ensureBinary(ctx);
         if (binary == null) return "7zz native không khả dụng";
         try {
@@ -847,6 +862,11 @@ public class Native7z {
             cmd.add("-o" + outRoot.getAbsolutePath());
             cmd.add(overwrite ? "-aoa" : "-aou");
             cmd.add("-y");
+            // 27/10: mat khau cho ZipCrypto (va moi loai 7zz mo duoc) — 1 argv
+            // rieng nen mat khau co khoang trang hay bat dau '-' van an toan.
+            if (password != null && !password.isEmpty()) {
+                cmd.add("-p" + password);
+            }
             cmd.add("-bsp1");
             cmd.add("-bso1");
             cmd.add("-bb1");
@@ -947,6 +967,8 @@ public class Native7z {
         Process proc = null;
         try {
             proc = new ProcessBuilder(cmd).directory(workDir)
+                    // 27/10: giong runOnce — stdin EOF ngay de khong treo o prompt mat khau.
+                    .redirectInput(new File("/dev/null"))
                     .redirectErrorStream(true).start();
             java.io.InputStreamReader reader =
                     new java.io.InputStreamReader(proc.getInputStream(), "UTF-8");

@@ -719,7 +719,41 @@ public class ZipUtils {
                 long sig = readLeInt(buf, 0);
                 if (sig != 0x02014b50L) break;
                 int method = readLeShort(buf, 10);
-                if (method == AES_METHOD) return true;
+                int flags = readLeShort(buf, 8);
+                // AES (method 99) + ZipCrypto truyen thong (co bit 0) deu la ma hoa.
+                if (method == AES_METHOD || (flags & 0x0001) != 0) return true;
+                int nameLen = readLeShort(buf, 28);
+                int extraLen = readLeShort(buf, 30);
+                int commentLen = readLeShort(buf, 32);
+                raf.seek(raf.getFilePointer() + nameLen + extraLen + commentLen);
+            }
+        } catch (Exception ignored) {
+        } finally {
+            closeQuietly(raf);
+        }
+        return false;
+    }
+
+    /**
+     * Entry ZipCrypto (ma hoa truyen thong, co bit 0) hay khong — loai tru
+     * entry AES (method 99, cung set bit 0 nhung di duong Java AES san co).
+     * ZipCrypto thi Java khong giai ma duoc, phai di 7zz native voi -p.
+     */
+    public static boolean isZipCryptoZip(File zipFile) {
+        java.io.RandomAccessFile raf = null;
+        try {
+            raf = new java.io.RandomAccessFile(zipFile, "r");
+            long cdOff = findEocdCentralDirOffset(raf);
+            if (cdOff < 0) return false;
+            raf.seek(cdOff);
+            byte[] buf = new byte[46];
+            while (true) {
+                if (raf.read(buf) != 46) break;
+                long sig = readLeInt(buf, 0);
+                if (sig != 0x02014b50L) break;
+                int method = readLeShort(buf, 10);
+                int flags = readLeShort(buf, 8);
+                if (method != AES_METHOD && (flags & 0x0001) != 0) return true;
                 int nameLen = readLeShort(buf, 28);
                 int extraLen = readLeShort(buf, 30);
                 int commentLen = readLeShort(buf, 32);
@@ -1157,6 +1191,25 @@ public class ZipUtils {
         }).start();
     }
 
+    /**
+     * Giai nen ZIP bang 7zz native voi mat khau (cho ZipCrypto ma Java
+     * khong giai ma duoc). entryNames null/rong = bung toan bo.
+     * Chay tren background thread rieng.
+     */
+    public static void extractZipNative(final File zipFile, final java.util.List<String> entryNames,
+                                        final File destDir, final boolean overwrite,
+                                        final String stripPrefix, final String password,
+                                        final FileOps.OpCallback cb, final CancelToken token) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                String nerr = Native7z.extractZipSync(sAppCtx, zipFile, entryNames,
+                        destDir, overwrite, stripPrefix, password, cb, token);
+                done(cb, nerr == null, nerr);
+            }
+        }).start();
+    }
+
     private static class CdEntry {
         String name;
         int method;
@@ -1262,6 +1315,17 @@ public class ZipUtils {
             int nameLen = readLeShort(lh, 26);
             int extraLen = readLeShort(lh, 28);
             long dataOff = e.localOff + 30 + nameLen + extraLen;
+            // 27/10 fix: doc phuong thuc THAT tu extra AES (0x9901) o local header.
+            // Truoc day luon cho la deflate -> file AES kieu stored (method 0, do
+            // tool khac nen) bi dua vao Inflater va vo voi "invalid stored block lengths".
+            int realMethod = 8; // mac dinh deflate (tuong thich file AES cu)
+            if (extraLen > 0) {
+                byte[] ex = new byte[extraLen];
+                raf.seek(e.localOff + 30 + nameLen);
+                raf.readFully(ex);
+                int m = aesExtraMethod(ex);
+                if (m >= 0) realMethod = m;
+            }
             raf.seek(dataOff);
 
             // Pentest 26/10: cap output giong duong ZIP thuong
@@ -1282,8 +1346,10 @@ public class ZipUtils {
                 if (e.method == AES_METHOD) {
                     if (password == null || password.isEmpty()) {
                         writeErr = "File được mã hóa — cần mật khẩu: " + e.name;
+                    } else if (realMethod != 0 && realMethod != 8) {
+                        writeErr = "Phương thức nén không hỗ trợ trong AES (" + realMethod + "): " + e.name;
                     } else {
-                        String err = decryptAesEntry(raf, e.compSize, password, os, token);
+                        String err = decryptAesEntry(raf, e.compSize, password, os, token, realMethod);
                         if (err != null) writeErr = err + ": " + e.name;
                     }
                 } else if (e.method == 8) {
@@ -1311,10 +1377,25 @@ public class ZipUtils {
         }
     }
 
+    /** Tim phuong thuc that trong extra field (scan TLV, tra -1 neu khong co 0x9901). */
+    private static int aesExtraMethod(byte[] extra) {
+        int i = 0;
+        while (i + 4 <= extra.length) {
+            int id = readLeShort(extra, i);
+            int sz = readLeShort(extra, i + 2);
+            if (sz < 0 || i + 4 + sz > extra.length) break;
+            if (id == AES_EXTRA_ID && sz >= 7) {
+                return readLeShort(extra, i + 4 + 5);
+            }
+            i += 4 + sz;
+        }
+        return -1;
+    }
+
     /** Giải mã 1 entry AES: salt || pwVerify || ciphertext || mac(10), trả về lỗi hoặc null. */
     private static String decryptAesEntry(java.io.RandomAccessFile raf, long dataLen,
                                            String password, java.io.OutputStream os,
-                                           CancelToken token) throws Exception {
+                                           CancelToken token, int realMethod) throws Exception {
         if (dataLen < AES_SALT_LEN + 2 + AES_MAC_LEN) return "Dữ liệu AES lỗi";
         byte[] salt = new byte[AES_SALT_LEN];
         raf.readFully(salt);
@@ -1328,7 +1409,7 @@ public class ZipUtils {
         javax.crypto.Mac mac = javax.crypto.Mac.getInstance("HmacSHA1");
         mac.init(new javax.crypto.spec.SecretKeySpec(keys[1], "HmacSHA1"));
         AesCtr ctr = new AesCtr(keys[0]);
-        java.util.zip.Inflater inf = new java.util.zip.Inflater(true);
+        java.util.zip.Inflater inf = (realMethod == 8) ? new java.util.zip.Inflater(true) : null;
         byte[] ibuf = new byte[BUFFER_SIZE];
         byte[] obuf = new byte[BUFFER_SIZE];
         long remain = cipherLen;
@@ -1340,13 +1421,18 @@ public class ZipUtils {
                 remain -= n;
                 mac.update(ibuf, 0, n);
                 ctr.process(ibuf, 0, n); // giải mã tại chỗ (CTR đối xứng)
-                inf.setInput(ibuf, 0, n);
-                int c;
-                while ((c = inf.inflate(obuf)) > 0) {
-                    os.write(obuf, 0, c);
+                if (realMethod == 0) {
+                    // Stored: plaintext ghi thang, khong inflate.
+                    os.write(ibuf, 0, n);
+                } else {
+                    inf.setInput(ibuf, 0, n);
+                    int c;
+                    while ((c = inf.inflate(obuf)) > 0) {
+                        os.write(obuf, 0, c);
+                    }
                 }
             }
-            inf.end();
+            if (inf != null) inf.end();
             byte[] wantMac = new byte[AES_MAC_LEN];
             raf.readFully(wantMac);
             byte[] gotMac = mac.doFinal();
@@ -1355,7 +1441,9 @@ public class ZipUtils {
             }
             return null;
         } finally {
-            try { inf.end(); } catch (Exception ignored) {}
+            if (inf != null) {
+                try { inf.end(); } catch (Exception ignored) {}
+            }
         }
     }
 

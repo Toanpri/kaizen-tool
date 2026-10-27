@@ -10,7 +10,7 @@ ANDROID_JAR="$SDK/platforms/android-34/android-34-ext12/android.jar"
 JDK="$SDK/jdk-17.0.20.1+1/bin"
 export PATH="$JDK:$BT:$PATH"
 
-APK_NAME="KaizenTool-v1.2-m6.apk"
+APK_NAME="KaizenTool-v1.2-m7.apk"
 KEYSTORE="$PROJ/kaizen.keystore"
 # Pentest 26/10: mat khau keystore KHONG nam trong repo nua (repo public).
 # Thu tu uu tien: env KAIZEN_KEYSTORE_PASS -> file ~/.kaizen-keystore-pass (mode 600).

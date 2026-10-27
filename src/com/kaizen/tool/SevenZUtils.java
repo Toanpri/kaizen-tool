@@ -11,6 +11,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
 
+import org.apache.commons.compress.PasswordRequiredException;
 import org.apache.commons.compress.archivers.sevenz.SevenZArchiveEntry;
 import org.apache.commons.compress.archivers.sevenz.SevenZFile;
 import org.apache.commons.compress.archivers.sevenz.SevenZMethod;
@@ -142,6 +143,12 @@ public class SevenZUtils {
     public static void extract7z(final File sevenZFile, final File destDir,
                                  final boolean overwrite, final FileOps.OpCallback cb,
                                  final CancelToken token) {
+        extract7z(sevenZFile, destDir, overwrite, null, cb, token);
+    }
+
+    public static void extract7z(final File sevenZFile, final File destDir,
+                                 final boolean overwrite, final String password,
+                                 final FileOps.OpCallback cb, final CancelToken token) {
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -158,7 +165,7 @@ public class SevenZUtils {
 
                     SevenZFile szf = null;
                     try {
-                        szf = new SevenZFile(sevenZFile);
+                        szf = openSevenZ(sevenZFile, password);
                         SevenZArchiveEntry e;
                         while ((e = szf.getNextEntry()) != null) {
                             if (cancelled(token)) {
@@ -195,6 +202,13 @@ public class SevenZUtils {
                                       final File destDir, final boolean overwrite,
                                       final String stripPrefix,
                                       final FileOps.OpCallback cb, final CancelToken token) {
+        extractEntries(sevenZFile, entryNames, destDir, overwrite, stripPrefix, null, cb, token);
+    }
+
+    public static void extractEntries(final File sevenZFile, final List<String> entryNames,
+                                      final File destDir, final boolean overwrite,
+                                      final String stripPrefix, final String password,
+                                      final FileOps.OpCallback cb, final CancelToken token) {
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -216,7 +230,7 @@ public class SevenZUtils {
 
                     SevenZFile szf = null;
                     try {
-                        szf = new SevenZFile(sevenZFile);
+                        szf = openSevenZ(sevenZFile, password);
                         SevenZArchiveEntry e;
                         while ((e = szf.getNextEntry()) != null && done[0] < total) {
                             if (cancelled(token)) {
@@ -275,6 +289,62 @@ public class SevenZUtils {
             closeQuietly(szf);
         }
         return list;
+    }
+
+    /** Mo 7z, co mat khau thi dung ban co mat khau (SevenZFile 1.26). */
+    private static SevenZFile openSevenZ(File f, String password) throws java.io.IOException {
+        if (password != null && !password.isEmpty()) {
+            return new SevenZFile(f, password.toCharArray());
+        }
+        return new SevenZFile(f);
+    }
+
+    /**
+     * 7z co yeu cau mat khau khong (header ma hoa, hoac entry noi dung ma hoa).
+     * Do bang probe: mo khong mat khau, entry nao doi mat khau khi mo stream
+     * thi ket luan co ma hoa. Header ma hoa thi constructor nem ngay.
+     */
+    public static boolean needsPassword(File sevenZFile) {
+        if (sevenZFile == null || !sevenZFile.isFile()) return false;
+        SevenZFile szf = null;
+        try {
+            szf = new SevenZFile(sevenZFile);
+            SevenZArchiveEntry e;
+            while ((e = szf.getNextEntry()) != null) {
+                if (e.isDirectory()) continue;
+                try {
+                    java.io.InputStream in = szf.getInputStream(e);
+                    closeQuietly(in);
+                } catch (PasswordRequiredException pre) {
+                    return true;
+                } catch (Exception ignored) {
+                    // Entry loi kieu khac — khong phai chuyen mat khau.
+                }
+            }
+            return false;
+        } catch (Exception ex) {
+            // Khong mo duoc header: neu dung la file 7z thi nhieu kha nang
+            // header ma hoa -> hoi mat khau, sai thi luc giai nen se bao loi.
+            return has7zMagic(sevenZFile);
+        } finally {
+            closeQuietly(szf);
+        }
+    }
+
+    private static boolean has7zMagic(File f) {
+        try {
+            FileInputStream in = new FileInputStream(f);
+            try {
+                byte[] m = new byte[6];
+                if (in.read(m) != 6) return false;
+                return m[0] == '7' && m[1] == 'z' && m[2] == (byte) 0xBC
+                        && m[3] == (byte) 0xAF && m[4] == (byte) 0x27 && m[5] == (byte) 0x1C;
+            } finally {
+                try { in.close(); } catch (Exception ignored) {}
+            }
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     // ------------------------------------------------------------------

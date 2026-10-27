@@ -99,19 +99,22 @@ public class ArchiveUtils {
                                   boolean overwrite, String password, FileOps.OpCallback cb,
                                   CancelToken token) {
         if (kind == KIND_ZIP) {
-            if (password != null || ZipUtils.isEncryptedZip(archiveFile)) {
+            if (password != null && ZipUtils.isZipCryptoZip(archiveFile)) {
+                // ZipCrypto: Java khong giai ma duoc -> 7zz native voi -p.
+                ZipUtils.extractZipNative(archiveFile, null, destDir, overwrite, "", password, cb, token);
+            } else if (password != null || ZipUtils.isEncryptedZip(archiveFile)) {
                 ZipUtils.extractZipEncrypted(archiveFile, destDir, overwrite, password, cb, token);
             } else {
                 ZipUtils.extractZip(archiveFile, destDir, overwrite, cb, token);
             }
         } else if (kind == KIND_7Z) {
-            SevenZUtils.extract7z(archiveFile, destDir, overwrite, cb, token);
+            SevenZUtils.extract7z(archiveFile, destDir, overwrite, password, cb, token);
         } else if (kind == KIND_TAR) {
             TarUtils.extractTar(archiveFile, isTarGzip(archiveFile), destDir, overwrite, cb, token);
         } else if (kind == KIND_GZ || kind == KIND_BZ2 || kind == KIND_XZ) {
             TarUtils.extractSingle(archiveFile, kind, destDir, overwrite, cb, token);
         } else if (kind == KIND_RAR) {
-            RarUtils.extractRar(archiveFile, destDir, overwrite, cb, token);
+            RarUtils.extractRar(archiveFile, destDir, overwrite, password, cb, token);
         } else if (kind == KIND_REM) {
             RemArchive.extractRem(archiveFile, destDir, overwrite, password, cb, token);
         } else if (cb != null) {
@@ -150,14 +153,17 @@ public class ArchiveUtils {
         // phải bung kèm toàn bộ file con bên trong — nếu không chỉ tạo vỏ folder rỗng.
         List<String> expanded = expandDirEntries(archiveFile, kind, entryNames);
         if (kind == KIND_ZIP) {
-            if (password != null || ZipUtils.isEncryptedZip(archiveFile)) {
+            if (password != null && ZipUtils.isZipCryptoZip(archiveFile)) {
+                // ZipCrypto chon entry: 7zz native voi -p (ton trong lua chon).
+                ZipUtils.extractZipNative(archiveFile, expanded, destDir, overwrite, stripPrefix, password, cb, token);
+            } else if (password != null || ZipUtils.isEncryptedZip(archiveFile)) {
                 // TODO: extractEntries cho ZIP mã hóa — hiện tại giải nén toàn bộ
                 ZipUtils.extractZipEncrypted(archiveFile, destDir, overwrite, password, cb, token);
             } else {
                 ZipUtils.extractEntries(archiveFile, expanded, destDir, overwrite, stripPrefix, cb, token);
             }
         } else if (kind == KIND_7Z) {
-            SevenZUtils.extractEntries(archiveFile, expanded, destDir, overwrite, stripPrefix, cb, token);
+            SevenZUtils.extractEntries(archiveFile, expanded, destDir, overwrite, stripPrefix, password, cb, token);
         } else if (kind == KIND_TAR) {
             TarUtils.extractEntries(archiveFile, isTarGzip(archiveFile),
                     expanded, destDir, overwrite, stripPrefix, cb, token);
@@ -236,10 +242,12 @@ public class ArchiveUtils {
         return new java.util.ArrayList<String>(out);
     }
 
-    /** Archive có yêu cầu mật khẩu khi giải nén không (ZIP AES / REM mã hóa). */
+    /** Archive có yêu cầu mật khẩu khi giải nén không (ZIP AES/ZipCrypto, 7Z, RAR, REM). */
     public static boolean needsPassword(File archiveFile, int kind) {
         try {
             if (kind == KIND_ZIP) return ZipUtils.isEncryptedZip(archiveFile);
+            if (kind == KIND_7Z) return SevenZUtils.needsPassword(archiveFile);
+            if (kind == KIND_RAR) return RarUtils.needsPassword(archiveFile);
             if (kind == KIND_REM) return RemArchive.needsPassword(archiveFile);
         } catch (Exception ignored) {
         }

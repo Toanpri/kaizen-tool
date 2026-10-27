@@ -2,6 +2,7 @@ package com.kaizen.tool;
 
 import com.github.junrar.Archive;
 import com.github.junrar.exception.RarException;
+import com.github.junrar.exception.WrongPasswordException;
 import com.github.junrar.rarfile.FileHeader;
 
 import java.io.File;
@@ -72,6 +73,13 @@ public final class RarUtils {
                                   final boolean overwrite,
                                   final FileOps.OpCallback cb,
                                   final CancelToken token) {
+        extractRar(rarFile, destDir, overwrite, null, cb, token);
+    }
+
+    public static void extractRar(final File rarFile, final File destDir,
+                                  final boolean overwrite, final String password,
+                                  final FileOps.OpCallback cb,
+                                  final CancelToken token) {
         new Thread(new Runnable() {
             @Override
             public void run() {
@@ -86,7 +94,10 @@ public final class RarUtils {
 
                     Archive archive = null;
                     try {
-                        archive = new Archive(rarFile);
+                        // 27/10: co mat khau thi dung ban co mat khau cua junrar.
+                        archive = (password != null && !password.isEmpty())
+                                ? new Archive(rarFile, password)
+                                : new Archive(rarFile);
                     } catch (Exception e) {
                         done(cb, false, "Không mở được file RAR: " + e.getMessage());
                         return;
@@ -112,7 +123,9 @@ public final class RarUtils {
                             doneCount++;
                             progress(cb, doneCount, total, name);
 
-                            if (hd.isEncrypted()) {
+                            // 27/10: chi coi ma hoa la loi khi KHONG co mat khau —
+                            // co mat khau thi junrar tu giai ma o extractFile ben duoi.
+                            if (hd.isEncrypted() && (password == null || password.isEmpty())) {
                                 if (firstError == null) {
                                     firstError = "File RAR có mật khẩu: " + name;
                                 }
@@ -152,6 +165,13 @@ public final class RarUtils {
                                         new FileOutputStream(out), token);
                                 archive.extractFile(hd, fos);
                             } catch (Exception e) {
+                                // 27/10: sai mat khau thi dung ca lan giai nen ngay,
+                                // khoi mat cong thu tung file con lai.
+                                if (e instanceof WrongPasswordException) {
+                                    firstError = "Sai mật khẩu: " + name;
+                                    try { out.delete(); } catch (Exception ignored) {}
+                                    break;
+                                }
                                 if (isCancel(e)) {
                                     firstError = CANCELLED;
                                     // Remove the half-written file.
@@ -185,6 +205,47 @@ public final class RarUtils {
                 }
             }
         }).start();
+    }
+
+    /**
+     * RAR co entry ma hoa khong (mo header, khong giai nen). Header ma hoa
+     * hoac mo header loi thi dua vao magic de quyet — hoi mat khau thua
+     * con hon het duong mo file.
+     */
+    public static boolean needsPassword(File rarFile) {
+        if (rarFile == null || !rarFile.isFile()) return false;
+        Archive archive = null;
+        try {
+            archive = new Archive(rarFile);
+            List<FileHeader> headers = archive.getFileHeaders();
+            if (headers == null || headers.isEmpty()) return hasRarMagic(rarFile);
+            for (FileHeader hd : headers) {
+                if (hd.isEncrypted()) return true;
+            }
+            return false;
+        } catch (Exception e) {
+            return hasRarMagic(rarFile);
+        } finally {
+            if (archive != null) {
+                try { archive.close(); } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    private static boolean hasRarMagic(File f) {
+        try {
+            java.io.FileInputStream in = new java.io.FileInputStream(f);
+            try {
+                byte[] m = new byte[6];
+                if (in.read(m) != 6) return false;
+                return m[0] == 'R' && m[1] == 'a' && m[2] == 'r' && m[3] == '!'
+                        && m[4] == 0x1A && m[5] == 0x07;
+            } finally {
+                try { in.close(); } catch (Exception ignored) {}
+            }
+        } catch (Exception e) {
+            return false;
+        }
     }
 
     // ------------------------------------------------------------------

@@ -169,7 +169,9 @@ public class ArchiveDialogs {
         pwEye.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View vv) {
                 int type = pwInput.getInputType();
-                boolean showing = (type & InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD) != 0;
+                // 27/10 fix: so sanh ca variation mask — VISIBLE (0x90) chia bit 0x80
+                // voi PASSWORD (0x80) nen check cu (type & VISIBLE) != 0 luon dung.
+                boolean showing = (type & InputType.TYPE_MASK_VARIATION) == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD;
                 pwInput.setInputType(showing
                         ? (InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD)
                         : (InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD));
@@ -1303,7 +1305,8 @@ public class ArchiveDialogs {
         eye.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
                 int t = pwInput.getInputType();
-                boolean showing = (t & InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD) != 0;
+                // 27/10 fix: giong dialog nen — so sanh ca variation mask.
+                boolean showing = (t & InputType.TYPE_MASK_VARIATION) == InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD;
                 pwInput.setInputType(showing
                         ? (InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_PASSWORD)
                         : (InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_VARIATION_VISIBLE_PASSWORD));
