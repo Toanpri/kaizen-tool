@@ -14,7 +14,7 @@ import java.util.List;
  *   KIND_GZ   — .gz single stream (extract only)
  *   KIND_BZ2  — .bz2 single stream (extract only)
  *   KIND_XZ   — .xz single stream (extract only)
- *   KIND_RAR  — .rar (extract only, via junrar — no browsing)
+ *   KIND_RAR  — .rar (browsable, via junrar)
  *   KIND_REM  — .rem (Kaizen Tool độc quyền: deflate + XOR obfuscation, browsable)
  */
 public class ArchiveUtils {
@@ -45,7 +45,8 @@ public class ArchiveUtils {
 
     /** True for formats that can be opened like a folder. */
     public static boolean isBrowsable(int kind) {
-        return kind == KIND_ZIP || kind == KIND_7Z || kind == KIND_TAR || kind == KIND_REM;
+        return kind == KIND_ZIP || kind == KIND_7Z || kind == KIND_TAR || kind == KIND_REM
+                || kind == KIND_RAR;
     }
 
     /** True when the tar stream is gzip-compressed (.tar.gz / .tgz). */
@@ -81,6 +82,8 @@ public class ArchiveUtils {
             return SevenZUtils.listEntries(archiveFile);
         } else if (kind == KIND_TAR) {
             return TarUtils.listEntries(archiveFile, isTarGzip(archiveFile));
+        } else if (kind == KIND_RAR) {
+            return RarUtils.listEntries(archiveFile);
         } else if (kind == KIND_REM) {
             return RemArchive.listEntries(archiveFile);
         }
@@ -167,6 +170,9 @@ public class ArchiveUtils {
         } else if (kind == KIND_TAR) {
             TarUtils.extractEntries(archiveFile, isTarGzip(archiveFile),
                     expanded, destDir, overwrite, stripPrefix, cb, token);
+        } else if (kind == KIND_RAR) {
+            RarUtils.extractEntries(archiveFile, expanded, destDir, overwrite,
+                    stripPrefix, password, cb, token);
         } else if (kind == KIND_REM) {
             RemArchive.extractEntries(archiveFile, expanded, destDir, overwrite, password, stripPrefix, cb, token);
         } else if (cb != null) {

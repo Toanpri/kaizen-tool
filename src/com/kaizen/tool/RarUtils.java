@@ -10,7 +10,10 @@ import java.io.FileOutputStream;
 import java.io.FilterOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
+import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * RAR extraction via junrar (pure Java, RAR 4.x + RAR 5.x, extract only).
@@ -175,6 +178,193 @@ public final class RarUtils {
                                 if (isCancel(e)) {
                                     firstError = CANCELLED;
                                     // Remove the half-written file.
+                                    try { out.delete(); } catch (Exception ignored) {}
+                                    break;
+                                }
+                                if (firstError == null) {
+                                    firstError = "Lỗi giải nén " + name + ": " + e.getMessage();
+                                }
+                                try { out.delete(); } catch (Exception ignored) {}
+                            } finally {
+                                if (fos != null) {
+                                    try { fos.close(); } catch (IOException ignored) {}
+                                }
+                            }
+                            if (CANCELLED.equals(firstError)) break;
+                        }
+
+                        if (CANCELLED.equals(firstError)) {
+                            done(cb, false, CANCELLED);
+                        } else if (firstError != null) {
+                            done(cb, false, firstError);
+                        } else {
+                            done(cb, true, null);
+                        }
+                    } finally {
+                        try { archive.close(); } catch (Exception ignored) {}
+                    }
+                } catch (Exception e) {
+                    done(cb, false, e.getMessage());
+                }
+            }
+        }).start();
+    }
+
+    /**
+     * List entries of a .rar file (used by the archive browser).
+     * Follows the SevenZUtils.listEntries() pattern: never throws,
+     * returns an empty list on any error. Entry names are normalized
+     * to '/' separators (junrar may return '\' for Windows-made archives).
+     */
+    public static List<ArchiveEntryInfo> listEntries(File rarFile) {
+        List<ArchiveEntryInfo> list = new ArrayList<ArchiveEntryInfo>();
+        if (rarFile == null || !rarFile.isFile()) return list;
+        Archive archive = null;
+        try {
+            archive = new Archive(rarFile);
+            List<FileHeader> headers = archive.getFileHeaders();
+            if (headers == null) return list;
+            for (FileHeader hd : headers) {
+                String name = hd.getFileName();
+                if (name == null) continue;
+                name = name.replace('\\', '/');
+                ArchiveEntryInfo info = new ArchiveEntryInfo();
+                info.name = name;
+                info.isDir = hd.isDirectory();
+                long size = hd.getUnpSize();
+                info.size = size < 0 ? 0 : size;
+                java.util.Date d = hd.getMTime();
+                info.time = d != null ? d.getTime() : 0;
+                list.add(info);
+            }
+        } catch (Exception ignored) {
+            return new ArrayList<ArchiveEntryInfo>();
+        } finally {
+            if (archive != null) {
+                try { archive.close(); } catch (Exception ignored) {}
+            }
+        }
+        return list;
+    }
+
+    // ------------------------------------------------------------------
+    // Extract selected entries (used by the RAR browser)
+    // ------------------------------------------------------------------
+
+    /** Extract only the named entries into destDir. Names are exact entry names. */
+    public static void extractEntries(final File rarFile, final List<String> entryNames,
+                                      final File destDir, final boolean overwrite,
+                                      final String stripPrefix,
+                                      final FileOps.OpCallback cb,
+                                      final CancelToken token) {
+        extractEntries(rarFile, entryNames, destDir, overwrite, stripPrefix, null, cb, token);
+    }
+
+    public static void extractEntries(final File rarFile, final List<String> entryNames,
+                                      final File destDir, final boolean overwrite,
+                                      final String stripPrefix, final String password,
+                                      final FileOps.OpCallback cb, final CancelToken token) {
+        new Thread(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    String setupErr = checkArgs(rarFile, destDir);
+                    if (setupErr != null) {
+                        done(cb, false, setupErr);
+                        return;
+                    }
+                    if (entryNames == null || entryNames.isEmpty()) {
+                        done(cb, false, "Không có mục nào để giải nén");
+                        return;
+                    }
+                    final String destCanon =
+                            destDir.getCanonicalPath() + File.separator;
+                    final Set<String> wanted = new HashSet<String>(entryNames);
+                    final int total = entryNames.size();
+                    int doneCount = 0;
+                    String firstError = null;
+
+                    Archive archive = null;
+                    try {
+                        archive = (password != null && !password.isEmpty())
+                                ? new Archive(rarFile, password)
+                                : new Archive(rarFile);
+                    } catch (Exception e) {
+                        done(cb, false, "Không mở được file RAR: " + e.getMessage());
+                        return;
+                    }
+
+                    try {
+                        List<FileHeader> headers = archive.getFileHeaders();
+                        if (headers == null || headers.isEmpty()) {
+                            done(cb, false, "File RAR rỗng hoặc không đọc được");
+                            return;
+                        }
+                        for (FileHeader hd : headers) {
+                            if (cancelled(token)) {
+                                firstError = CANCELLED;
+                                break;
+                            }
+                            String name = hd.getFileName();
+                            if (name == null) continue;
+                            name = name.replace('\\', '/');
+                            if (!wanted.contains(name)) continue;
+                            doneCount++;
+                            progress(cb, doneCount, total, name);
+
+                            // Giong extractRar: chi coi ma hoa la loi khi KHONG
+                            // co mat khau — co mat khau thi junrar tu giai ma.
+                            if (hd.isEncrypted() && (password == null || password.isEmpty())) {
+                                if (firstError == null) {
+                                    firstError = "File RAR có mật khẩu: " + name;
+                                }
+                                continue;
+                            }
+
+                            String stripped = ArchiveUtils.stripPrefix(name, stripPrefix);
+                            if (stripped == null || stripped.isEmpty()) continue;
+
+                            File out = safeOutFile(destDir, destCanon, stripped);
+                            if (out == null) {
+                                if (firstError == null) {
+                                    firstError = "Đường dẫn không hợp lệ trong RAR: " + name;
+                                }
+                                continue;
+                            }
+
+                            if (hd.isDirectory()) {
+                                if (!out.isDirectory() && !out.mkdirs() && !out.isDirectory()) {
+                                    if (firstError == null) {
+                                        firstError = "Không tạo được thư mục: " + name;
+                                    }
+                                }
+                                continue;
+                            }
+
+                            if (out.exists() && !overwrite) continue;
+
+                            File parent = out.getParentFile();
+                            if (parent != null && !parent.isDirectory() && !parent.mkdirs()) {
+                                if (firstError == null) {
+                                    firstError = "Không tạo được thư mục cha: " + name;
+                                }
+                                continue;
+                            }
+
+                            OutputStream fos = null;
+                            try {
+                                fos = new CancelAwareOutputStream(
+                                        new FileOutputStream(out), token);
+                                archive.extractFile(hd, fos);
+                            } catch (Exception e) {
+                                // Sai mat khau thi dung ca lan giai nen ngay.
+                                if (e instanceof WrongPasswordException) {
+                                    firstError = "Sai mật khẩu: " + name;
+                                    try { out.delete(); } catch (Exception ignored) {}
+                                    break;
+                                }
+                                if (isCancel(e)) {
+                                    firstError = CANCELLED;
                                     try { out.delete(); } catch (Exception ignored) {}
                                     break;
                                 }

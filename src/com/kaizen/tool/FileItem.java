@@ -39,6 +39,13 @@ public class FileItem {
 
     /** canonical path used as the selection key */
     public String path() {
+        // v1.3-m1 FIX (bug B): entry ao trong archive ("archive:/abs/path.zip!/entry")
+        // la duong dan TUONG DOI doi voi java.io.File nen getCanonicalPath()
+        // ghep them thu muc lam viec vao dau (vd "/archive:/...") lam mat
+        // tien to "archive:" -> ThumbnailLoader bo qua hoan toan (khong Toast,
+        // khong trich, chi hien icon generic). Tra nguyen chuoi ao khi gap.
+        String raw = file.getPath();
+        if (raw.startsWith("archive:")) return raw;
         try {
             return file.getCanonicalPath();
         } catch (Exception e) {
@@ -50,7 +57,8 @@ public class FileItem {
      * M2/M3 — virtual entry (e.g. inside an archive). {@code file} is a dummy
      * placeholder built from {@code virtualPath} ("archive:/abs/path.7z!/entry/name")
      * and must never be touched as a real filesystem path. ThumbnailLoader
-     * will fail to decode it and fall back to the static icon, which is fine.
+     * resolves it by extracting the entry to cache first (v1.3-m1), and only
+     * falls back to the static icon when that fails.
      */
     public FileItem(String virtualPath, String name, boolean isDir,
                     long size, long lastModified, int childCount) {

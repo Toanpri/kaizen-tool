@@ -44,7 +44,6 @@ public class ShizukuProvider extends ContentProvider {
 
     @Override
     public boolean onCreate() {
-        Log.d(TAG, "ShizukuProvider created");
         return true;
     }
 
@@ -73,13 +72,11 @@ public class ShizukuProvider extends ContentProvider {
         // Nếu đã có binder sống thì bỏ qua
         IBinder existing = ShizukuHelper.getBinder();
         if (existing != null && existing.pingBinder()) {
-            Log.d(TAG, "sendBinder called but binder already alive");
             return;
         }
 
         BinderContainer container = extras.getParcelable(EXTRA_BINDER);
         if (container != null && container.binder != null) {
-            Log.i(TAG, "Binder received from Shizuku server!");
             ShizukuHelper.onBinderReceived(container.binder);
         } else {
             Log.w(TAG, "sendBinder: no binder in extras");

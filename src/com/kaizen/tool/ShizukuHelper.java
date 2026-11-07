@@ -62,7 +62,6 @@ public class ShizukuHelper {
      * Được gọi bởi ShizukuProvider khi nhận binder từ server.
      */
     public static void onBinderReceived(IBinder binder) {
-        Log.i(TAG, "onBinderReceived");
         sBinder = binder;
         // Tạo interface chính thức từ VsTool
         try {
@@ -92,6 +91,9 @@ public class ShizukuHelper {
         attachApplication();
         // Kiểm tra permission hiện tại
         checkPermission();
+        // Log duy nhất cho cả quá trình kết nối (v1.3-m1: rút gọn log Shizuku).
+        Log.i(TAG, "Shizuku connected (server v" + getRealServerVersion()
+                + ", permission=" + sPermissionGranted + ")");
     }
 
     private static final ShizukuApplication sApp = new ShizukuApplication();
@@ -104,11 +106,9 @@ public class ShizukuHelper {
         String packageName = "com.kaizen.tool";
         // Thử V13 trước (transact 18), fallback V11 (transact 14) — giống ZArchiver
         if (attachV13(packageName)) {
-            Log.d(TAG, "attachApplication V13 success");
             return;
         }
         if (attachV11(packageName)) {
-            Log.d(TAG, "attachApplication V11 success");
             return;
         }
         Log.w(TAG, "attachApplication failed both V13 and V11");
@@ -166,13 +166,11 @@ public class ShizukuHelper {
      * Được gọi khi permission thay đổi (từ server callback).
      */
     public static void onPermissionChanged(boolean granted) {
-        Log.d(TAG, "onPermissionChanged: " + granted);
         sPermissionGranted = granted;
     }
 
     /** Gọi lại attachApplication (để debug). */
     public static void reattach() {
-        Log.d(TAG, "reattach() called");
         sPermissionGranted = false;
         attachApplication();
     }
@@ -245,7 +243,6 @@ public class ShizukuHelper {
             if (intent != null) {
                 intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
                 ctx.startActivity(intent);
-                Log.d(TAG, "Opened Shizuku manager for manual permission grant");
                 return true;
             } else {
                 Log.w(TAG, "No launch intent for Shizuku");
@@ -267,7 +264,6 @@ public class ShizukuHelper {
             return;
         }
         sPermissionGranted = checkRealPermission();
-        Log.d(TAG, "checkPermission: " + sPermissionGranted);
     }
 
     /**
@@ -319,7 +315,6 @@ public class ShizukuHelper {
                 moe.shizuku.server.IRemoteProcess remote =
                         sService.newProcess(cmd, env, dir);
                 if (remote != null) {
-                    Log.d(TAG, "newProcess via official API: OK");
                     return new ShizukuProcess(remote.asBinder());
                 } else {
                     Log.w(TAG, "newProcess via official API: null");
@@ -345,7 +340,6 @@ public class ShizukuHelper {
                 reply.readException();
                 IBinder processBinder = reply.readStrongBinder();
                 if (processBinder != null) {
-                    Log.d(TAG, "newProcess: got remote process binder");
                     return new ShizukuProcess(processBinder);
                 } else {
                     Log.w(TAG, "newProcess: null process binder");
@@ -403,7 +397,6 @@ public class ShizukuHelper {
                 sBinder.transact(TRANSACTION_checkSelfPermission, data, reply, 0);
                 reply.readException();
                 boolean result = reply.readInt() != 0;
-                Log.d(TAG, "checkSelfPermission: " + result);
                 return result;
             } finally {
                 data.recycle();
@@ -416,7 +409,6 @@ public class ShizukuHelper {
                 ShizukuProcess proc = newProcess(new String[]{"echo", "test"});
                 if (proc != null) {
                     proc.destroy();
-                    Log.d(TAG, "newProcess test succeeded -> has permission");
                     return true;
                 }
             } catch (Exception ignored) {}

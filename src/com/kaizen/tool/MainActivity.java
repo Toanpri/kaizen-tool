@@ -1397,7 +1397,7 @@ public class MainActivity extends Activity {
         }
         if (!inArchive && ArchiveUtils.kindForName(item.name) >= 0) {
             final int kind = ArchiveUtils.kindForName(item.name);
-            // M5: RAR không browse được — chỉ hiện "Mở" khi browsable (ZIP/7Z/TAR).
+            // v1.3-m1: RAR browse được như ZIP/7Z/TAR — chỉ hiện "Mở" khi browsable.
             if (ArchiveUtils.isBrowsable(kind)) {
                 rows.add(new ContextMenuDialog.Item("Mở", R.drawable.ic_open,
                         new ContextMenuDialog.OnAction() {
@@ -1552,6 +1552,33 @@ public class MainActivity extends Activity {
                     new ContextMenuDialog.OnAction() {
                         @Override public void run() { showEntryInfo(item); }
                     }));
+            // v1.3-m1 bug A: entry APK/bundle trong archive cũng có "Cài đặt"
+            // (trước đây mục này chỉ thêm khi !inArchive nên trong archive
+            // không bao giờ cài được). Trích entry ra cache rồi gọi đúng
+            // dialog như ngoài file list.
+            if (!item.isDir && (item.name.toLowerCase().endsWith(".apk")
+                    || SplitApkInstaller.isBundleName(item.name))) {
+                final boolean bundle = SplitApkInstaller.isBundleName(item.name);
+                rows.add(new ContextMenuDialog.Item("Cài đặt", R.drawable.ic_file_apk,
+                        new ContextMenuDialog.OnAction() {
+                            @Override public void run() {
+                                toast("Đang mở " + item.name + "...");
+                                extractArchiveEntryToCache(item, new OnArchiveEntryExtracted() {
+                                    @Override public void onExtracted(java.io.File out) {
+                                        if (out != null && out.exists()) {
+                                            if (bundle) {
+                                                ApkDialogs.showInstallBundle(MainActivity.this, out);
+                                            } else {
+                                                ApkDialogs.showInstall(MainActivity.this, out);
+                                            }
+                                        } else {
+                                            toast("Không mở được file trong archive");
+                                        }
+                                    }
+                                });
+                            }
+                        }));
+            }
             rows.add(new ContextMenuDialog.Item("Sao chép", R.drawable.ic_copy,
                     new ContextMenuDialog.OnAction() {
                         @Override public void run() {
@@ -2072,11 +2099,51 @@ public class MainActivity extends Activity {
         }
         // Tap file trong archive -> giải nén ra cache rồi mở bằng trình xem
         // (fix bug 19/10: trước đây hiện dialog giải nén như ảnh Kazoi gửi).
+        final String simpleName = item.name;
+        toast("Đang mở " + simpleName + "...");
+        extractArchiveEntryToCache(item, new OnArchiveEntryExtracted() {
+            @Override public void onExtracted(java.io.File out) {
+                if (out != null && out.exists()) {
+                    // v1.3-m1 bug A: APK/bundle trong archive phải đi dialog
+                    // Cài đặt như ngoài file list, TRƯỚC khi check media
+                    // (MediaHelper trả -1 cho .apk nên trước đây rơi xuống
+                    // openFile() generic, không bao giờ thấy nút Cài đặt).
+                    String lower = simpleName.toLowerCase();
+                    if (lower.endsWith(".apk")) {
+                        ApkDialogs.showInstall(MainActivity.this, out);
+                    } else if (SplitApkInstaller.isBundleName(simpleName)) {
+                        ApkDialogs.showInstallBundle(MainActivity.this, out);
+                    } else {
+                        int mt = MediaHelper.mediaTypeOf(simpleName);
+                        if (mt >= 0) {
+                            openMediaViewer(out, mt);
+                        } else {
+                            openFile(out);
+                        }
+                    }
+                } else {
+                    toast("Không mở được file trong archive");
+                }
+            }
+        });
+    }
+
+    /** Callback khi trích xong 1 entry trong archive ra cache (chạy trên UI thread). */
+    private interface OnArchiveEntryExtracted {
+        void onExtracted(java.io.File out);
+    }
+
+    /**
+     * Trích 1 entry trong archive đang mở ra getCacheDir()/archive_view
+     * (dọn file xem cũ >1 ngày cho đỡ đầy cache). Gọi callback trên UI
+     * thread với file thật, hoặc null khi trích lỗi. Dùng chung cho tap mở
+     * file và menu "Cài đặt" của entry APK/bundle trong archive.
+     */
+    private void extractArchiveEntryToCache(final FileItem item,
+                                            final OnArchiveEntryExtracted cb) {
         final File af = archiveFile;
         final int kind = archiveKind;
         final String entryName = archiveDir + item.name;
-        final String simpleName = item.name;
-        toast("Đang mở " + simpleName + "...");
         new Thread(new Runnable() {
             @Override public void run() {
                 java.io.File outFile = null;
@@ -2117,16 +2184,7 @@ public class MainActivity extends Activity {
                 final java.io.File out = outFile;
                 runOnUiThread(new Runnable() {
                     @Override public void run() {
-                        if (out != null && out.exists()) {
-                            int mt = MediaHelper.mediaTypeOf(simpleName);
-                            if (mt >= 0) {
-                                openMediaViewer(out, mt);
-                            } else {
-                                openFile(out);
-                            }
-                        } else {
-                            toast("Không mở được file trong archive");
-                        }
+                        cb.onExtracted(out);
                     }
                 });
             }
@@ -2331,8 +2389,7 @@ public class MainActivity extends Activity {
         new Thread(new Runnable() {
             @Override
             public void run() {
-                // 24/10: đo chặng Shizuku + giữ ref để enrich nền ở cuối
-                long tShizukuLs = -1;
+                // 24/10: giữ ref để enrich nền ở cuối
                 List<FileItem> shizukuFiles = null;
                 File[] raw = dir.listFiles();
                 final List<FileItem> fresh = new ArrayList<FileItem>();
@@ -2346,12 +2403,8 @@ public class MainActivity extends Activity {
                 } else {
                     // v1.1-m1: File API không đọc được (vd: /Android/data) -> thử Shizuku
                     if (ShizukuHelper.isRunning() && ShizukuHelper.hasPermission()) {
-                        android.util.Log.d("MainActivity",
-                                "listFiles null, trying Shizuku for: " + dir.getAbsolutePath());
-                        long tLs0 = System.currentTimeMillis();
                         shizukuFiles =
                                 ShizukuFileHelper.listFiles(dir.getAbsolutePath());
-                        tShizukuLs = System.currentTimeMillis() - tLs0;
                         if (shizukuFiles != null) {
                             // 24/10: KHÔNG enrich ở đây nữa — list hiện ngay
                             // sau ls+sort, tên app điền nền ở cuối worker
@@ -2363,9 +2416,6 @@ public class MainActivity extends Activity {
                                 }
                                 fresh.add(fi);
                             }
-                            android.util.Log.d("MainActivity",
-                                    "Shizuku listed " + fresh.size() + " items in "
-                                            + tShizukuLs + "ms");
                         } else {
                             loadFailed[0] = true;
                             // Hiện lỗi để diagnostic
@@ -2420,12 +2470,8 @@ public class MainActivity extends Activity {
                 // List đã hiện từ trước nên chặng này không chặn UI nữa;
                 // guard currentDir để không refresh nhầm khi user đã đi chỗ khác.
                 if (shizukuFiles != null) {
-                    long tEn0 = System.currentTimeMillis();
                     ShizukuFileHelper.enrichWithAppInfo(MainActivity.this,
                             shizukuFiles, dir.getAbsolutePath());
-                    android.util.Log.d("MainActivity", "Shizuku enrich "
-                            + (System.currentTimeMillis() - tEn0) + "ms (ls was "
-                            + tShizukuLs + "ms)");
                     runOnUiThread(new Runnable() {
                         @Override public void run() {
                             if (currentDir != dir) return;

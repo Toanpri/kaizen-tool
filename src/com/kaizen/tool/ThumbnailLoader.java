@@ -28,6 +28,37 @@ public class ThumbnailLoader {
 
     private static final int THUMB_PX = 144; // target thumbnail size
 
+    /** Prefix cua entry ao trong archive (xem FileItem virtual constructor). */
+    private static final String ARCHIVE_PREFIX = "archive:";
+    /** Khong trich entry thumbnail qua 256 MB (anh/video/APK qua lon -> icon tinh). */
+    private static final long MAX_ARCHIVE_THUMB_BYTES = 256L * 1024 * 1024;
+    /** Khoa de 2 thread khong trich cung 1 entry archive ra cache mot luc. */
+    private static final Object ARCHIVE_THUMB_LOCK = new Object();
+
+    /**
+     * Tach "archive:/abs/path.zip!/entry/name" thanh [archivePath, entryName].
+     * Tra ve null neu khong phai dang archive.
+     * (package-private de host unit test — xem /tmp/kz-thumb-test.)
+     */
+    static String[] parseArchivePath(String path) {
+        if (path == null || !path.startsWith(ARCHIVE_PREFIX)) return null;
+        int sep = path.indexOf("!/", ARCHIVE_PREFIX.length());
+        if (sep < 0) return null;
+        String archivePath = path.substring(ARCHIVE_PREFIX.length(), sep);
+        String entryName = path.substring(sep + 2);
+        if (archivePath.isEmpty() || entryName.isEmpty()) return null;
+        return new String[]{archivePath, entryName};
+    }
+
+    /**
+     * Ten thu muc cache thumbnail cho 1 archive (theo path + size + mtime cua
+     * file archive goc) — doi ten khi archive doi, de khong dung nham cache cu.
+     * (package-private de host unit test.)
+     */
+    static String archiveThumbDirName(String archivePath, long length, long lastModified) {
+        return Integer.toHexString(archivePath.hashCode())
+                + "_" + length + "_" + lastModified;
+    }
     private final Context appContext;
     private final LruCache<String, Bitmap> cache;
     private final ExecutorService executor;
@@ -120,15 +151,25 @@ public class ThumbnailLoader {
         public void run() {
             Bitmap bmp = null;
             try {
-                String ext = extOf(item.name);
-                if (isImageExt(ext)) {
-                    bmp = decodeImageThumb(path);
-                } else if (isVideoExt(ext)) {
-                    bmp = decodeVideoThumb(path);
-                } else if (ext.equals("apk")) {
-                    bmp = decodeApkIcon(path);
-                } else if (SplitApkInstaller.isBundleName(item.name)) {
-                    bmp = decodeBundleIcon(path);
+                // Entry trong archive: path "archive:..." khong phai file that
+                // tren dia — trich entry ra cache roi decode tu file that.
+                // resolveArchiveEntry tra null thi fail-soft ve icon tinh.
+                String decodePath = path;
+                if (path.startsWith(ARCHIVE_PREFIX)) {
+                    java.io.File real = resolveArchiveEntry(item);
+                    decodePath = (real == null) ? null : real.getAbsolutePath();
+                }
+                if (decodePath != null) {
+                    String ext = extOf(item.name);
+                    if (isImageExt(ext)) {
+                        bmp = decodeImageThumb(decodePath);
+                    } else if (isVideoExt(ext)) {
+                        bmp = decodeVideoThumb(decodePath);
+                    } else if (ext.equals("apk")) {
+                        bmp = decodeApkIcon(decodePath);
+                    } else if (SplitApkInstaller.isBundleName(item.name)) {
+                        bmp = decodeBundleIcon(decodePath);
+                    }
                 }
             } catch (Exception e) {
                 bmp = null; // fallback below
@@ -155,6 +196,117 @@ public class ThumbnailLoader {
                 }
             });
         }
+    }
+
+    // ---------- archive entries ----------
+
+    /**
+     * Trich 1 entry trong archive ra cache de lam thumbnail (anh/video/apk/
+     * bundle): ThumbnailLoader chi decode duoc tu file that tren dia.
+     * Tra ve file that, hoac null de fail-soft ve icon tinh.
+     * - Chi trich khi entry co kich thuoc hop ly (<= 256 MB).
+     * - Archive ma hoa: KHONG hoi mat khau chi de load icon -> fail-soft.
+     * - Tai dung file da trich (cung archive + entry + size) nen cuon list
+     *   khong trich lai.
+     * - Cung 1 code cho ca 2 duong mo ZIP (ngoai data truc tiep, trong
+     *   Android/data da stage qua Shizuku) vi sau buoc stage, archiveFile
+     *   o day da la file that trong cache.
+     */
+    private java.io.File resolveArchiveEntry(FileItem item) {
+        String[] parts = parseArchivePath(item.path());
+        if (parts == null) return null;
+        java.io.File archiveFile = new java.io.File(parts[0]);
+        String entryName = parts[1];
+        if (!archiveFile.isFile()) return null;
+        if (item.size <= 0 || item.size > MAX_ARCHIVE_THUMB_BYTES) return null;
+        int kind = ArchiveUtils.kindForName(archiveFile.getName());
+        if (kind < 0) return null;
+        if (ArchiveUtils.needsPassword(archiveFile, kind)) return null;
+        synchronized (ARCHIVE_THUMB_LOCK) {
+            try {
+                java.io.File root = new java.io.File(appContext.getCacheDir(), "archive-thumb");
+                java.io.File archDir = new java.io.File(root, archiveThumbDirName(
+                        archiveFile.getAbsolutePath(),
+                        archiveFile.length(), archiveFile.lastModified()));
+                java.io.File out = new java.io.File(archDir, entryName);
+                if (!isWithinDir(out, archDir)) return null;
+                if (out.isFile() && out.length() == item.size) return out;
+                final java.util.concurrent.CountDownLatch latch =
+                        new java.util.concurrent.CountDownLatch(1);
+                final boolean[] ok = new boolean[1];
+                ArchiveUtils.extractEntries(archiveFile, kind,
+                        java.util.Collections.singletonList(entryName),
+                        archDir, true, null, "",
+                        new FileOps.OpCallback() {
+                            @Override public void onProgress(int done, int total, String name) {}
+                            @Override public void onDone(boolean ok2, String err) {
+                                ok[0] = ok2;
+                                latch.countDown();
+                            }
+                        }, new CancelToken());
+                // Cho trich toi da 15s — tranh thread loader treo mai neu
+                // trich ket, lam ket ca pool thumbnail (3 thread).
+                boolean extracted;
+                try {
+                    extracted = latch.await(15, java.util.concurrent.TimeUnit.SECONDS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
+                if (!extracted) return null;
+                if (ok[0] && out.isFile() && out.length() == item.size
+                        && isWithinDir(out, archDir)) {
+                    pruneThumbCache(root, archDir);
+                    return out;
+                }
+                return null;
+            } catch (Exception e) {
+                return null;
+            }
+        }
+    }
+
+    /** Chi nhan file nam that trong thu muc dich (phong entry name chua "../"). */
+    private static boolean isWithinDir(java.io.File f, java.io.File dir) {
+        try {
+            String fc = f.getCanonicalPath();
+            String dc = dir.getCanonicalPath() + java.io.File.separator;
+            return fc.startsWith(dc);
+        } catch (Exception e) {
+            return false;
+        }
+    }
+
+    /** Giu toi da 8 thu muc archive-thumb, xoa cai cu nhat. */
+    private static void pruneThumbCache(java.io.File root, java.io.File keep) {
+        try {
+            java.io.File[] dirs = root.listFiles();
+            if (dirs == null || dirs.length <= 8) return;
+            java.util.Arrays.sort(dirs, new java.util.Comparator<java.io.File>() {
+                @Override public int compare(java.io.File a, java.io.File b) {
+                    return Long.compare(a.lastModified(), b.lastModified());
+                }
+            });
+            int toDelete = dirs.length - 8;
+            for (java.io.File d : dirs) {
+                if (toDelete <= 0) break;
+                if (!d.equals(keep)) {
+                    deleteRecursive(d);
+                    toDelete--;
+                }
+            }
+        } catch (Exception ignored) { }
+    }
+
+    private static void deleteRecursive(java.io.File f) {
+        if (f == null) return;
+        if (f.isDirectory()) {
+            java.io.File[] kids = f.listFiles();
+            if (kids != null) {
+                for (java.io.File k : kids) deleteRecursive(k);
+            }
+        }
+        f.delete();
     }
 
     // ---------- decoders ----------
@@ -223,6 +375,7 @@ public class ThumbnailLoader {
             appInfo.sourceDir = path;
             appInfo.publicSourceDir = path;
             Drawable d = pm.getApplicationIcon(appInfo);
+            if (d == null) return null;
             return drawableToBitmap(d);
         } catch (Exception e) {
             return null;
