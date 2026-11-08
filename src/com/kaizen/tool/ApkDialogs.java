@@ -35,7 +35,6 @@ public class ApkDialogs {
         }).start();
     }
 
-    private static final int PINK = 0xFFF06292;
     private static final int GRAY = 0xFF757575;
     private static final int DARK = 0xFF212121;
 
@@ -167,7 +166,7 @@ public class ApkDialogs {
             banner.setText("\u0110\u00e3 c\u00e0i \u0111\u1eb7t phi\u00ean b\u1ea3n "
                     + installedVer);
             banner.setTextSize(14);
-            banner.setTextColor(PINK);
+            banner.setTextColor(CharacterTheme.primaryColor(a));
             banner.setBackgroundDrawable(
                     a.getResources().getDrawable(R.drawable.banner_pink_light));
             int bp = dp(a, 10);
@@ -386,7 +385,7 @@ public class ApkDialogs {
             TextView banner = new TextView(a);
             banner.setText("Đã cài đặt phiên bản " + installedVer);
             banner.setTextSize(14);
-            banner.setTextColor(PINK);
+            banner.setTextColor(CharacterTheme.primaryColor(a));
             banner.setBackgroundDrawable(
                     a.getResources().getDrawable(R.drawable.banner_pink_light));
             int bp = dp(a, 10);

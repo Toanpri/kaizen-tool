@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Theme Ram/Rem: màu nền panel/divider đổi theo nhân vật.
+     AppTheme (Ram) trỏ về @color/* gốc, AppTheme_Rem trỏ về @color/*Rem.
+     Dạng reference|color để theme gán được cả @color lẫn hex. -->
+<resources>
+    <attr name="characterSelectedBackground" format="reference|color" />
+    <attr name="characterPathBarBackground" format="reference|color" />
+    <attr name="characterDivider" format="reference|color" />
+</resources>

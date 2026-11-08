@@ -22,6 +22,7 @@ import android.widget.Button;
 import android.widget.CheckBox;
 import android.widget.CompoundButton;
 import android.widget.EditText;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.ProgressBar;
 import android.widget.RadioButton;
@@ -1419,6 +1420,12 @@ public class ArchiveDialogs {
         dlg.setContentView(R.layout.dialog_progress);
         dlg.setCancelable(false);
         dlg.setCanceledOnTouchOutside(false);
+
+        // Ảnh theo theme Ram/Rem: nền popup + bé ngồi trên mép dialog
+        ImageView dialogBg = (ImageView) dlg.findViewById(R.id.dialog_bg);
+        if (dialogBg != null) dialogBg.setImageResource(CharacterTheme.popupBgRes(a));
+        ImageView dialogChibi = (ImageView) dlg.findViewById(R.id.dialog_chibi);
+        if (dialogChibi != null) dialogChibi.setImageResource(CharacterTheme.dialogChibiRes(a));
 
         final TextView tvTitle = (TextView) dlg.findViewById(R.id.tvTitle);
         final ProgressBar bar = (ProgressBar) dlg.findViewById(R.id.progressBar);

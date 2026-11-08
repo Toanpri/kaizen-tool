@@ -10,7 +10,7 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="56dp"
-        android:background="@color/colorPrimary"
+        android:background="?android:attr/colorPrimary"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:padding="4dp">
@@ -83,7 +83,7 @@
                 android:layout_marginTop="24dp"
                 android:gravity="center"
                 android:text="Made with ♥ by Gose &amp; Kazoi"
-                android:textColor="@color/colorPrimary"
+                android:textColor="?android:attr/colorPrimary"
                 android:textSize="16sp"
                 android:textStyle="bold" />
         </LinearLayout>

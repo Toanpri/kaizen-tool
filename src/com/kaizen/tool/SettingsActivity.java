@@ -56,7 +56,7 @@ public class SettingsActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         AppSettings.apply(this);
-        setTheme(R.style.AppTheme);
+        setTheme(CharacterTheme.appTheme(this));
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_settings);
 
@@ -79,6 +79,27 @@ public class SettingsActivity extends Activity {
                         }
                     }
                 });
+
+        // ---- Nhân vật (Ram/Rem) ----
+        final Button btnRam = (Button) findViewById(R.id.btn_char_ram);
+        final Button btnRem = (Button) findViewById(R.id.btn_char_rem);
+        styleCharButtons(btnRam, btnRem);
+        btnRam.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (!CharacterThemeSpec.RAM.equals(CharacterTheme.current(SettingsActivity.this))) {
+                    CharacterTheme.setCharacter(SettingsActivity.this, CharacterThemeSpec.RAM);
+                    recreate();
+                }
+            }
+        });
+        btnRem.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (!CharacterThemeSpec.REM.equals(CharacterTheme.current(SettingsActivity.this))) {
+                    CharacterTheme.setCharacter(SettingsActivity.this, CharacterThemeSpec.REM);
+                    recreate();
+                }
+            }
+        });
 
         // ---- Language ----
         final RadioButton vi = (RadioButton) findViewById(R.id.lang_vi);
@@ -126,6 +147,19 @@ public class SettingsActivity extends Activity {
         ShizukuHelper.removeOnBinderDeadListener(binderDead);
         ShizukuHelper.removeOnRequestPermissionResultListener(permResult);
         super.onPause();
+    }
+
+    /** Nút nhân vật đang chọn tô màu chủ đạo, nút còn lại xám. */
+    private void styleCharButtons(Button ram, Button rem) {
+        boolean isRem = CharacterTheme.isRem(this);
+        Button sel = isRem ? rem : ram;
+        Button unsel = isRem ? ram : rem;
+        sel.setBackgroundTintList(
+                android.content.res.ColorStateList.valueOf(CharacterTheme.primaryColor(this)));
+        sel.setTextColor(0xFFFFFFFF);
+        unsel.setBackgroundTintList(
+                android.content.res.ColorStateList.valueOf(0xFF9E9E9E));
+        unsel.setTextColor(0xFFFFFFFF);
     }
 
     /** Update Shizuku status text + button for the 4 real states. */

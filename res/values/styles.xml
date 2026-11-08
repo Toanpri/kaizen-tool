@@ -6,16 +6,39 @@
         <item name="android:colorAccent">@color/colorAccent</item>
         <item name="android:windowBackground">@color/windowBackground</item>
         <item name="android:popupMenuStyle">@style/PopupMenuStyle</item>
+        <item name="characterSelectedBackground">@color/selectedBackground</item>
+        <item name="characterPathBarBackground">@color/pathBarBackground</item>
+        <item name="characterDivider">@color/divider</item>
+    </style>
+
+    <!-- Theme Rem (xanh dương nhạt): màu chủ đạo + nền panel/divider đổi theo
+         nhân vật; bản tối của các màu Rem nằm ở values-night (giữ nguyên cơ chế). -->
+    <style name="AppTheme_Rem" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:colorPrimary">#79AEE8</item>
+        <item name="android:colorPrimaryDark">#5B93D6</item>
+        <item name="android:colorAccent">#A9CDF0</item>
+        <item name="android:windowBackground">@color/windowBackground</item>
+        <item name="android:popupMenuStyle">@style/PopupMenuStyle</item>
+        <item name="characterSelectedBackground">@color/selectedBackgroundRem</item>
+        <item name="characterPathBarBackground">@color/pathBarBackgroundRem</item>
+        <item name="characterDivider">@color/dividerRem</item>
     </style>
 
     <style name="PopupMenuStyle" parent="android:Widget.Material.Light.PopupMenu">
-        <item name="android:popupBackground">@color/selectedBackground</item>
+        <item name="android:popupBackground">?attr/characterSelectedBackground</item>
     </style>
 
     <style name="DialogTheme" parent="android:Theme.Material.Light.Dialog">
         <item name="android:colorPrimary">@color/colorPrimary</item>
         <item name="android:colorPrimaryDark">@color/colorPrimaryDark</item>
         <item name="android:colorAccent">@color/colorAccent</item>
+        <item name="android:windowBackground">@color/windowBackground</item>
+    </style>
+
+    <style name="DialogTheme_Rem" parent="android:Theme.Material.Light.Dialog">
+        <item name="android:colorPrimary">#79AEE8</item>
+        <item name="android:colorPrimaryDark">#5B93D6</item>
+        <item name="android:colorAccent">#A9CDF0</item>
         <item name="android:windowBackground">@color/windowBackground</item>
     </style>
 
@@ -34,6 +57,16 @@
         <item name="android:colorPrimary">@color/colorPrimary</item>
         <item name="android:colorPrimaryDark">@color/colorPrimaryDark</item>
         <item name="android:colorAccent">@color/colorAccent</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:windowAnimationStyle">@style/BottomSheetAnimation</item>
+        <item name="android:backgroundDimEnabled">true</item>
+    </style>
+
+    <style name="BottomSheetDialogTheme_Rem" parent="android:Theme.Material.Light.Dialog.NoActionBar">
+        <item name="android:colorPrimary">#79AEE8</item>
+        <item name="android:colorPrimaryDark">#5B93D6</item>
+        <item name="android:colorAccent">#A9CDF0</item>
         <item name="android:windowBackground">@android:color/transparent</item>
         <item name="android:windowIsFloating">false</item>
         <item name="android:windowAnimationStyle">@style/BottomSheetAnimation</item>

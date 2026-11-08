@@ -21,8 +21,9 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content">
 
-            <!-- Ảnh nền: centerCrop để lấp đầy mà không bị kéo giãn -->
+            <!-- Ảnh nền popup (Ram/Rem theo theme, set bằng code) -->
             <ImageView
+                android:id="@+id/dialog_bg"
                 android:layout_width="match_parent"
                 android:layout_height="match_parent"
                 android:src="@drawable/popup_bg_rounded"
@@ -134,8 +135,9 @@
         </FrameLayout>
     </LinearLayout>
 
-    <!-- Bé Rem: 56x112dp, hông (56dp) = đúng mép dialog -->
+    <!-- Bé ngồi trên mép dialog, 56x112dp (Ram/Rem theo theme, set bằng code) -->
     <ImageView
+        android:id="@+id/dialog_chibi"
         android:layout_width="56dp"
         android:layout_height="112dp"
         android:layout_gravity="top|end"

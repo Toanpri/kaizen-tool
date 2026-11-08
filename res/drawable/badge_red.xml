@@ -2,5 +2,5 @@
 <!-- M5: badge đỏ đậm hiện số lượng mục trên FAB dán -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="oval">
-    <solid android:color="@color/colorPrimaryDark" />
+    <solid android:color="?android:attr/colorPrimaryDark" />
 </shape>

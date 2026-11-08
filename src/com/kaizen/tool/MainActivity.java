@@ -180,6 +180,8 @@ public class MainActivity extends Activity {
 
     // M5: detect theme change made in SettingsActivity
     private int appliedNightMode = -1;
+    // Theme Ram/Rem: detect character change made in SettingsActivity
+    private String appliedCharacter = null;
 
     // -------------------------------------------------- lifecycle
 
@@ -188,9 +190,13 @@ public class MainActivity extends Activity {
         AppSettings.apply(this); // M5: theme + locale from settings
         appliedNightMode = getResources().getConfiguration().uiMode
                 & Configuration.UI_MODE_NIGHT_MASK;
-        setTheme(R.style.AppTheme);
+        appliedCharacter = CharacterTheme.current(this);
+        setTheme(CharacterTheme.appTheme(this));
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
+        // Nền theo theme Ram/Rem (thay @drawable/bg_rem cứng trong layout)
+        ((ImageView) findViewById(R.id.bg))
+                .setImageResource(CharacterTheme.bgRes(this));
         ZipUtils.init(this); // 20/10: cho native fallback khi ZIP dùng method lạ (XZ=95...)
 
         // Pentest 26/10: don ban staged cua cac lan mo truoc (file doc
@@ -397,6 +403,15 @@ public class MainActivity extends Activity {
             recreate();
             return;
         }
+        // Theme Ram/Rem changed in Settings -> recreate to apply
+        if (appliedCharacter != null
+                && !appliedCharacter.equals(CharacterTheme.current(this))) {
+            recreate();
+            return;
+        }
+        // Nền theo theme (phòng khi đổi theme mà không recreate)
+        ((ImageView) findViewById(R.id.bg))
+                .setImageResource(CharacterTheme.bgRes(this));
         if (hasPermission()) {
             hidePermissionOverlay();
             if (!listLoaded) {
@@ -596,7 +611,7 @@ public class MainActivity extends Activity {
                 (android.widget.RadioGroup) v.findViewById(R.id.gs_mode);
         android.widget.ImageView icon =
                 (android.widget.ImageView) v.findViewById(R.id.gs_icon);
-        icon.setColorFilter(0xFFF06292);
+        icon.setColorFilter(CharacterTheme.primaryColor(this));
 
         final AlertDialog dlg =
                 new CatBuilder(this, R.style.DialogTheme).setView(v).create();
@@ -619,7 +634,7 @@ public class MainActivity extends Activity {
             for (final String h : hist) {
                 android.widget.TextView tv = new android.widget.TextView(this);
                 tv.setText(h);
-                tv.setTextColor(0xFFF06292);
+                tv.setTextColor(CharacterTheme.primaryColor(this));
                 tv.setTextSize(15);
                 int hp = dp(4), vp = dp(10);
                 tv.setPadding(hp, vp, hp, vp);
@@ -713,7 +728,7 @@ public class MainActivity extends Activity {
     /** M5: chạy tìm kiếm đệ quy trên background thread, progress có nút Hủy. */
     private void startGlobalSearch(final String keyword, final int mode) {
         final CancelToken token = new CancelToken();
-        final ProgressDialog pd = new ProgressDialog(this, R.style.DialogTheme);
+        final ProgressDialog pd = new ProgressDialog(this, CharacterTheme.dialogTheme(this));
         pd.setTitle("\u0110ang t\u00ecm ki\u1ebfm to\u00e0n m\u00e1y...");
         pd.setProgressStyle(ProgressDialog.STYLE_SPINNER);
         pd.setMessage(keyword);
@@ -3645,8 +3660,10 @@ public class MainActivity extends Activity {
         final boolean night = (getResources().getConfiguration().uiMode
                 & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
         final int bgColor = getResources().getColor(night
-                ? R.color.pathBarBackground : R.color.selectedBackground);
-        final int pressedColor = night ? 0xFF5c3a44 : 0xFFF8BBD0;
+                ? CharacterTheme.pathBarBackgroundRes(this)
+                : CharacterTheme.selectedBackgroundRes(this));
+        final int pressedColor = CharacterThemeSpec.selectionPressedColor(
+                CharacterTheme.current(this), night);
         final int textColor = getResources().getColor(R.color.textPrimary);
 
         final java.util.List<OverflowItem> items = new java.util.ArrayList<OverflowItem>();
@@ -3794,8 +3811,10 @@ public class MainActivity extends Activity {
         final boolean night = (getResources().getConfiguration().uiMode
                 & Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES;
         final int bgColor = getResources().getColor(night
-                ? R.color.pathBarBackground : R.color.selectedBackground);
-        final int pressedColor = night ? 0xFF5c3a44 : 0xFFF8BBD0;
+                ? CharacterTheme.pathBarBackgroundRes(this)
+                : CharacterTheme.selectedBackgroundRes(this));
+        final int pressedColor = CharacterThemeSpec.selectionPressedColor(
+                CharacterTheme.current(this), night);
         final int textColor = getResources().getColor(R.color.textPrimary);
 
         BaseAdapter la = new BaseAdapter() {
@@ -3817,7 +3836,7 @@ public class MainActivity extends Activity {
 
                 ImageView iv = new ImageView(MainActivity.this);
                 iv.setImageResource(e.icon);
-                iv.setColorFilter(getResources().getColor(R.color.colorPrimary));
+                iv.setColorFilter(CharacterTheme.primaryColor(MainActivity.this));
                 LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
                         dp(28), dp(28));
                 ilp.setMarginEnd(dp(12));

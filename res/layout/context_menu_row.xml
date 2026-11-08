@@ -11,7 +11,7 @@
         android:layout_width="24dp"
         android:layout_height="24dp"
         android:contentDescription="@null"
-        android:tint="@color/colorPrimary" />
+        android:tint="?android:attr/colorPrimary" />
 
     <TextView
         android:id="@+id/cm_title"

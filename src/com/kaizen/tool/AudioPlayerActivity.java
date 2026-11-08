@@ -48,7 +48,7 @@ public class AudioPlayerActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         AppSettings.apply(this);
-        setTheme(R.style.AppTheme);
+        setTheme(CharacterTheme.appTheme(this));
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_audio_player);
 

@@ -181,9 +181,9 @@ public class FileAdapter extends BaseAdapter {
 
     // ---------- icon mapping ----------
 
-    public static int iconResFor(FileItem item) {
+    public static int iconResFor(Context ctx, FileItem item) {
         if (item.isDir) {
-            return R.drawable.ic_folder_rem;
+            return CharacterTheme.folderIconRes(ctx);
         }
         String ext = extension(item.name);
         if (ext.equals("jpg") || ext.equals("jpeg") || ext.equals("png")
@@ -275,11 +275,11 @@ public class FileAdapter extends BaseAdapter {
             if (appIcon != null) {
                 holder.icon.setImageDrawable(appIcon);
             } else {
-                thumbnails.load(item, holder.icon, iconResFor(item));
+                thumbnails.load(item, holder.icon, iconResFor(context, item));
             }
         } else {
             // Async thumbnail for image/video/apk, fallback icon otherwise
-            thumbnails.load(item, holder.icon, iconResFor(item));
+            thumbnails.load(item, holder.icon, iconResFor(context, item));
         }
         holder.name.setText(item.name);
         if (item.appLabel != null) {
@@ -295,10 +295,11 @@ public class FileAdapter extends BaseAdapter {
         holder.check.setVisibility(selectionMode ? View.VISIBLE : View.GONE);
         holder.check.setChecked(selected.contains(item.path()));
 
-        // pink highlight for selected rows ("full hồng")
+        // highlight cho dòng đã chọn (đổi theo theme Ram/Rem)
         if (selected.contains(item.path())) {
             convertView.setBackgroundColor(
-                    context.getResources().getColor(R.color.selectedBackground));
+                    context.getResources().getColor(
+                            CharacterTheme.selectedBackgroundRes(context)));
         } else {
             convertView.setBackgroundColor(0x00000000);
         }
@@ -347,15 +348,16 @@ public class FileAdapter extends BaseAdapter {
             if (appIcon != null) {
                 h.icon.setImageDrawable(appIcon);
             } else {
-                thumbnails.load(item, h.icon, iconResFor(item));
+                thumbnails.load(item, h.icon, iconResFor(context, item));
             }
         } else {
-            thumbnails.load(item, h.icon, iconResFor(item));
+            thumbnails.load(item, h.icon, iconResFor(context, item));
         }
         h.name.setText(item.name);
         if (selected.contains(item.path())) {
             h.root.setBackgroundColor(
-                    context.getResources().getColor(R.color.selectedBackground));
+                    context.getResources().getColor(
+                            CharacterTheme.selectedBackgroundRes(context)));
         } else {
             h.root.setBackgroundColor(0x00000000);
         }

@@ -73,7 +73,7 @@ public class ContextMenuDialog {
             }
         };
 
-        final Dialog dialog = new Dialog(a, R.style.BottomSheetDialogTheme);
+        final Dialog dialog = new Dialog(a, CharacterTheme.bottomSheetTheme(a));
         dialog.setContentView(R.layout.bottom_sheet_menu);
         dialog.setCanceledOnTouchOutside(true);
 

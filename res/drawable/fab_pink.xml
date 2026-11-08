@@ -2,5 +2,5 @@
 <!-- M5: nền tròn hồng cho FAB dán -->
 <shape xmlns:android="http://schemas.android.com/apk/res/android"
     android:shape="oval">
-    <solid android:color="@color/colorPrimary" />
+    <solid android:color="?android:attr/colorPrimary" />
 </shape>

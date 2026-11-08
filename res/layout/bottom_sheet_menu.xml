@@ -16,20 +16,20 @@
         android:paddingBottom="12dp"
         android:paddingStart="16dp"
         android:paddingEnd="16dp"
-        android:textColor="@color/colorPrimary"
+        android:textColor="?android:attr/colorPrimary"
         android:textSize="17sp"
         android:textStyle="bold" />
 
     <View
         android:layout_width="match_parent"
         android:layout_height="1dp"
-        android:background="@color/divider" />
+        android:background="?attr/characterDivider" />
 
     <ListView
         android:id="@+id/bs_list"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:divider="@color/divider"
+        android:divider="?attr/characterDivider"
         android:dividerHeight="1dp"
         android:footerDividersEnabled="false"
         android:headerDividersEnabled="false" />

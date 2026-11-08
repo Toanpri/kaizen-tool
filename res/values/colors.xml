@@ -10,4 +10,8 @@
     <color name="divider">#f8bbd0</color>
     <color name="selectedBackground">#fce4ec</color>
     <color name="pathBarBackground">#fce4ec</color>
+    <!-- Theme Rem (xanh dương nhạt): bản xanh của 3 màu panel/divider -->
+    <color name="selectedBackgroundRem">#e3f0fb</color>
+    <color name="pathBarBackgroundRem">#e3f0fb</color>
+    <color name="dividerRem">#bbd6f0</color>
 </resources>

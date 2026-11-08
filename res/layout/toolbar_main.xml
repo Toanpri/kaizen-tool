@@ -3,7 +3,7 @@
     android:id="@+id/toolbar"
     android:layout_width="match_parent"
     android:layout_height="56dp"
-    android:background="@color/colorPrimary"
+    android:background="?android:attr/colorPrimary"
     android:gravity="center_vertical"
     android:orientation="horizontal"
     android:padding="4dp">
@@ -79,7 +79,7 @@
         android:id="@+id/toolbar_selection"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="@color/colorPrimaryDark"
+        android:background="?android:attr/colorPrimaryDark"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:visibility="gone">
@@ -162,7 +162,7 @@
         android:id="@+id/toolbar_search"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:background="@color/colorPrimary"
+        android:background="?android:attr/colorPrimary"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:visibility="gone">

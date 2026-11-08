@@ -59,7 +59,7 @@ public class PullRefreshLayout extends FrameLayout {
 
         headerText = new TextView(context);
         headerText.setText("Kéo xuống để làm mới");
-        headerText.setTextColor(0xFFC2185B);
+        headerText.setTextColor(CharacterTheme.primaryDarkColor(context));
         headerText.setTextSize(14);
         header.addView(headerText);
 

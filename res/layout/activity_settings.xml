@@ -10,7 +10,7 @@
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="56dp"
-        android:background="@color/colorPrimary"
+        android:background="?android:attr/colorPrimary"
         android:gravity="center_vertical"
         android:orientation="horizontal"
         android:padding="4dp">
@@ -48,7 +48,7 @@
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Giao diện"
-                android:textColor="@color/colorPrimaryDark"
+                android:textColor="?android:attr/colorPrimaryDark"
                 android:textSize="14sp"
                 android:textStyle="bold" />
 
@@ -80,14 +80,65 @@
                 android:layout_height="1dp"
                 android:layout_marginTop="12dp"
                 android:layout_marginBottom="12dp"
-                android:background="@color/divider" />
+                android:background="?attr/characterDivider" />
+
+            <!-- Nhân vật: Ram (hồng) / Rem (xanh nhạt) -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="Nhân vật"
+                android:textColor="?android:attr/colorPrimaryDark"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:orientation="horizontal">
+
+                <Button
+                    android:id="@+id/btn_char_ram"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginEnd="8dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/btn_pink"
+                    android:paddingTop="12dp"
+                    android:paddingBottom="12dp"
+                    android:text="Ram"
+                    android:textColor="#FFFFFF"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+
+                <Button
+                    android:id="@+id/btn_char_rem"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_marginStart="8dp"
+                    android:layout_weight="1"
+                    android:background="@drawable/btn_pink"
+                    android:paddingTop="12dp"
+                    android:paddingBottom="12dp"
+                    android:text="Rem"
+                    android:textColor="#FFFFFF"
+                    android:textSize="16sp"
+                    android:textStyle="bold" />
+            </LinearLayout>
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:layout_marginTop="12dp"
+                android:layout_marginBottom="12dp"
+                android:background="?attr/characterDivider" />
 
             <!-- Ngôn ngữ -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Ngôn ngữ / Language"
-                android:textColor="@color/colorPrimaryDark"
+                android:textColor="?android:attr/colorPrimaryDark"
                 android:textSize="14sp"
                 android:textStyle="bold" />
 
@@ -119,14 +170,14 @@
                 android:layout_height="1dp"
                 android:layout_marginTop="12dp"
                 android:layout_marginBottom="12dp"
-                android:background="@color/divider" />
+                android:background="?attr/characterDivider" />
 
             <!-- Cache -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Bộ nhớ đệm"
-                android:textColor="@color/colorPrimaryDark"
+                android:textColor="?android:attr/colorPrimaryDark"
                 android:textSize="14sp"
                 android:textStyle="bold" />
 
@@ -146,14 +197,14 @@
                 android:layout_height="1dp"
                 android:layout_marginTop="12dp"
                 android:layout_marginBottom="12dp"
-                android:background="@color/divider" />
+                android:background="?attr/characterDivider" />
 
             <!-- Shizuku (placeholder — agent khác làm logic) -->
             <TextView
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
                 android:text="Shizuku"
-                android:textColor="@color/colorPrimaryDark"
+                android:textColor="?android:attr/colorPrimaryDark"
                 android:textSize="14sp"
                 android:textStyle="bold" />
 

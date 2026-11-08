@@ -52,11 +52,13 @@ public class CatPopup {
         View oldRoot = contentGroup.getChildAt(0);
         contentGroup.removeView(oldRoot);
 
-        // Nền bo tròn hồng nhạt cho thân dialog
+        // Nền bo tròn theo theme Ram/Rem cho thân dialog
+        String character = CharacterTheme.current(dialog.getContext());
         GradientDrawable bodyBg = new GradientDrawable();
-        bodyBg.setColor(0xFFFFF3F7);
+        bodyBg.setColor(CharacterThemeSpec.dialogBodyColor(character));
         bodyBg.setCornerRadius(24 * d);
-        bodyBg.setStroke((int) (2 * d), 0xFFE8A0B8);
+        bodyBg.setStroke((int) (2 * d),
+                CharacterThemeSpec.dialogStrokeColor(character));
         oldRoot.setBackground(bodyBg);
         // Padding để chữ không tràn ra ngoài
         int hPad = (int) (8 * d);
@@ -77,10 +79,11 @@ public class CatPopup {
         bodyLp.topMargin = earSpace;
         wrapper.addView(oldRoot, bodyLp);
 
-        // Tai mèo: chiều rộng match parent, cao tự động theo tỉ lệ
+        // Tai mèo: ảnh theo theme Ram (hồng) / Rem (xanh)
         try {
             ImageView ears = new ImageView(dialog.getContext());
-            ears.setImageResource(R.drawable.cat_ears);
+            ears.setImageResource(CharacterTheme.isRem(dialog.getContext())
+                    ? R.drawable.cat_ears_rem : R.drawable.cat_ears);
             ears.setScaleType(ImageView.ScaleType.FIT_CENTER);
             ears.setAdjustViewBounds(true);
             FrameLayout.LayoutParams earLp = new FrameLayout.LayoutParams(

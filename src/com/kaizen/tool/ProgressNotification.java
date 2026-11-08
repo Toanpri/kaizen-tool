@@ -20,7 +20,6 @@ public class ProgressNotification {
 
     public static final String CHANNEL_ID = "kaizen_progress";
     private static final String CHANNEL_NAME = "Tiến trình";
-    private static final int PINK_ACCENT = 0xFFF06292;
 
     private static final AtomicInteger ID_SEQ = new AtomicInteger(1000);
 
@@ -58,7 +57,7 @@ public class ProgressNotification {
                 .setContentTitle(title)
                 .setContentText("Đang chuẩn bị...")
                 .setSmallIcon(R.drawable.ic_launcher)
-                .setColor(PINK_ACCENT)
+                .setColor(CharacterTheme.primaryColor(this.context))
                 .setContentIntent(pi)
                 .setOngoing(true)
                 .setAutoCancel(false)
