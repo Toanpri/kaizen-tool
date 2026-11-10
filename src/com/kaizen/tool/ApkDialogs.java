@@ -2,6 +2,8 @@ package com.kaizen.tool;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.ProgressDialog;
+import android.content.DialogInterface;
 import android.graphics.drawable.Drawable;
 import android.os.Build;
 import android.view.Gravity;
@@ -280,32 +282,75 @@ public class ApkDialogs {
      */
     public static void showInstallBundle(final Activity a, final File bundleFile) {
         if (a == null || bundleFile == null || !bundleFile.isFile()) return;
+        // v1.3-m3-test1: gói to (vd .xapk 3.9GB) bung nền rất lâu mà trước đây
+        // không có gì hiện lên nên user tưởng bấm không ăn — hiện tiến trình
+        // chờ ngay từ lúc bấm Cài đặt.
+        // v1.3-m3-test2: dialog hủy được (vuốt back / chạm ngoài) — hủy thì
+        // dừng luồng bung thật qua CancelToken và dọn file bung dở.
+        // v1.3-m3-test6: chỉ hủy khi vuốt back (kéo hủy của điện thoại) —
+        // chạm ngoài dialog KHÔNG hủy nữa (Kazoi 10/11: "bấm chỗ khác
+        // khum hủy"). Áp cho cả dialog "đang bung" lẫn "đang cài đặt".
+        final CancelToken cancelToken = new CancelToken();
+        final boolean[] cancelled = {false};
+        final ProgressDialog pd = new ProgressDialog(a);
+        pd.setMessage("Đang bung gói, chờ chút nhé...");
+        pd.setCancelable(true);
+        pd.setCanceledOnTouchOutside(false);
+        pd.setOnCancelListener(new DialogInterface.OnCancelListener() {
+            @Override public void onCancel(DialogInterface d) {
+                cancelled[0] = true;
+                cancelToken.cancel();
+                Toast.makeText(a, "Đã hủy bung gói", Toast.LENGTH_SHORT).show();
+            }
+        });
+        try { pd.show(); } catch (Exception ignored) { }
         new Thread(new Runnable() {
             @Override
             public void run() {
-                final SplitApkInstaller.Contents c =
-                        SplitApkInstaller.extract(a, bundleFile);
-                final ApkUtils.ApkInfo info = (c != null && c.baseApk != null)
-                        ? ApkUtils.getApkInfo(a, c.baseApk) : null;
+                SplitApkInstaller.Contents c = null;
+                ApkUtils.ApkInfo info = null;
+                String error = null;
+                try {
+                    c = SplitApkInstaller.extract(a, bundleFile, cancelToken);
+                    info = (c != null && c.baseApk != null)
+                            ? ApkUtils.getApkInfo(a, c.baseApk) : null;
+                } catch (Exception ex) {
+                    // Trước đây exception ở đây chết thread im lặng, không
+                    // toast không dialog — giờ báo lỗi rõ ràng.
+                    error = ex.getMessage();
+                    if (c != null) SplitApkInstaller.discard(c);
+                    c = null;
+                }
+                final SplitApkInstaller.Contents fc = c;
+                final ApkUtils.ApkInfo fi = info;
+                final String ferr = error;
                 a.runOnUiThread(new Runnable() {
                     @Override
                     public void run() {
+                        try { pd.dismiss(); } catch (Exception ignored) { }
+                        if (cancelled[0]) {
+                            // User đã hủy: luồng bung đã dọn file dở, không
+                            // hiện thêm toast lỗi.
+                            SplitApkInstaller.discard(fc);
+                            return;
+                        }
                         boolean dead = a.isFinishing()
                                 || (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN_MR1
                                         && a.isDestroyed());
                         if (dead) {
-                            SplitApkInstaller.discard(c);
+                            SplitApkInstaller.discard(fc);
                             return;
                         }
-                        if (c == null) {
-                            String why = SplitApkInstaller.lastError;
+                        if (fc == null) {
+                            String why = ferr != null ? ferr
+                                    : SplitApkInstaller.lastError;
                             Toast.makeText(a,
                                     "Không đọc được gói này"
                                             + (why != null ? ": " + why : ""),
                                     Toast.LENGTH_LONG).show();
                             return;
                         }
-                        showBundleDialog(a, bundleFile, c, info);
+                        showBundleDialog(a, bundleFile, fc, fi);
                     }
                 });
             }

@@ -192,6 +192,17 @@
                 android:text="Xóa cache thumbnail"
                 android:textColor="#FFFFFF" />
 
+            <Button
+                android:id="@+id/btn_clear_sessions"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/btn_pink"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp"
+                android:text="Dọn session cài đặt cũ"
+                android:textColor="#FFFFFF" />
+
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"

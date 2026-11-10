@@ -92,5 +92,12 @@ Icon app GIỮ NGUYÊN (nền hồng + tóc xanh = vừa khít 2 màu 2 bé).
   kích thước thật của ảnh nền. Sửa: popup Ram về đúng 800×533 (111,160 B).
   Build mới: sha256 15fc0ae486729d5cdc3e6cb00a0575b20190d604492f6173a6dc9fcab07c1cda,
   8,301,648 B, SIGN OK — gửi thẳng vào chat.
+- **RELEASE v1.3-m2 (8/11 ~08:31, Kazoi duyệt "oki xong rùi"):** versionName
+  1.3-m2 (vc 28 giữ nguyên), build lại OK — KaizenTool-1.3-m2.apk,
+  sha256 6e59ee611b3cbbb70a1e9d8ae2825c84ee5c9dda563ca64da104130b4bd140fb,
+  SIGN OK. Commit 7ff71ce (46 files, +501/-76), push main OK, tag + GitHub
+  Release `v1.3-m2` kèm APK. Issue #1 đã trả lời + đóng (CLOSED).
+  KHÔNG commit: theme/ (bản nháp 6.3M), .learnings/, kz-native-test-craft.py,
+  kz-native-test.zip. Rollback = cài lại v1.3-m1 (69a8318).
 - Ruling R7: test build bump vc 27→28 + versionName 1.3-m2-theme-test
   (tên file khác hẳn v1.3-m1 để không nhầm); release sau chốt tên sau.

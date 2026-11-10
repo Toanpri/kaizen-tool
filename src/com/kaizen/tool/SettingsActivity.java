@@ -123,6 +123,12 @@ public class SettingsActivity extends Activity {
                     @Override public void onClick(View v) { clearCache(); }
                 });
 
+        // ---- Dọn session cài đặt cũ (v1.3-m3-test5) ----
+        ((Button) findViewById(R.id.btn_clear_sessions))
+                .setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) { clearSessions(); }
+                });
+
         // ---- Shizuku (real status via ShizukuHelper) ----
         shizukuStatus = (TextView) findViewById(R.id.shizuku_status);
         shizukuBtn = (Button) findViewById(R.id.btn_shizuku);
@@ -309,6 +315,23 @@ public class SettingsActivity extends Activity {
         }
         Toast.makeText(this, "Đã xóa cache (" + deleted + " mục)",
                 Toast.LENGTH_SHORT).show();
+    }
+
+    /** Dọn session cài đặt cũ của app (v1.3-m3-test5) — nhả chỗ kẹt ở "Khác". */
+    private void clearSessions() {
+        Toast.makeText(this, "Đang dọn session...", Toast.LENGTH_SHORT).show();
+        new Thread(new Runnable() {
+            @Override public void run() {
+                final String msg = SplitApkInstaller.cleanupOrphanedSessions(
+                        SettingsActivity.this);
+                runOnUiThread(new Runnable() {
+                    @Override public void run() {
+                        Toast.makeText(SettingsActivity.this, msg,
+                                Toast.LENGTH_LONG).show();
+                    }
+                });
+            }
+        }).start();
     }
 
     private static boolean deleteRecursive(File f) {
