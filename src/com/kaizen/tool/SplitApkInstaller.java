@@ -448,6 +448,8 @@ public class SplitApkInstaller {
                                 Toast.makeText(a, "Đã hủy cài đặt",
                                         Toast.LENGTH_SHORT).show();
                             } else {
+                                // v1.3-m4-test1: lưu lỗi mới nhất vào log.
+                                recordError(a, err);
                                 Toast.makeText(a, "Không cài được: " + err,
                                         Toast.LENGTH_LONG).show();
                             }
@@ -520,11 +522,18 @@ public class SplitApkInstaller {
                 sUserCancelled = false;
             } else {
                 String detail = friendlyError(status);
+                String fullDetail = detail;
                 if (sysMsg != null && !sysMsg.trim().isEmpty()) {
                     String m = sysMsg.trim();
+                    // Log giữ NGUYÊN sysMsg đầy đủ (không cắt 220 ký tự
+                    // như toast) để xem được hết lỗi kiểu "-124: Failed
+                    // parse... Targeting..." (v1.3-m4-test1).
+                    fullDetail = detail + " — " + m;
                     if (m.length() > 220) m = m.substring(0, 220) + "...";
                     detail += " — " + m;
                 }
+                // v1.3-m4-test1: lưu lỗi mới nhất vào log (chỉ giữ 1 lỗi).
+                recordError(ctx, fullDetail);
                 Toast.makeText(ctx, "Cài đặt thất bại: " + detail,
                         Toast.LENGTH_LONG).show();
             }
@@ -572,6 +581,36 @@ public class SplitApkInstaller {
             ctx.getPackageManager().getPackageInstaller()
                     .abandonSession(sessionId);
         } catch (Exception ignored) { }
+    }
+
+    // ---- Nhật ký lỗi cài đặt (v1.3-m4-test1) ----
+    // Chỉ giữ ĐÚNG 1 lỗi mới nhất (ghi đè lỗi cũ) — Kazoi 13/11:
+    // "chỉ hiện lỗi mới nhất nhé, chứ khum phải danh sách".
+    private static final String LOG_PREFS = "kaizen_install_log";
+    private static final String LOG_KEY_LAST = "last_error";
+
+    /** Lưu lỗi cài đặt mới nhất (ghi đè lỗi cũ). */
+    public static void recordError(Context ctx, String error) {
+        if (ctx == null || error == null) return;
+        try {
+            String stamp = new java.text.SimpleDateFormat("dd/MM HH:mm",
+                    java.util.Locale.getDefault())
+                    .format(new java.util.Date());
+            ctx.getApplicationContext().getSharedPreferences(LOG_PREFS,
+                    Context.MODE_PRIVATE).edit()
+                    .putString(LOG_KEY_LAST, stamp + "\n" + error).apply();
+        } catch (Exception ignored) { }
+    }
+
+    /** Lấy lỗi cài đặt mới nhất (null nếu chưa có lỗi nào). */
+    public static String getLastError(Context ctx) {
+        if (ctx == null) return null;
+        try {
+            return ctx.getApplicationContext().getSharedPreferences(LOG_PREFS,
+                    Context.MODE_PRIVATE).getString(LOG_KEY_LAST, null);
+        } catch (Exception ignored) {
+            return null;
+        }
     }
 
     /**

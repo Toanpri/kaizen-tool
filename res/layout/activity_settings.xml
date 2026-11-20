@@ -203,6 +203,27 @@
                 android:text="Dọn session cài đặt cũ"
                 android:textColor="#FFFFFF" />
 
+            <!-- Nhật ký lỗi cài đặt (v1.3-m4-test1) -->
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="12dp"
+                android:text="Nhật ký lỗi"
+                android:textColor="?android:attr/colorPrimaryDark"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <Button
+                android:id="@+id/btn_view_error_log"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="8dp"
+                android:background="@drawable/btn_pink"
+                android:paddingStart="24dp"
+                android:paddingEnd="24dp"
+                android:text="Xem lỗi gần nhất"
+                android:textColor="#FFFFFF" />
+
             <View
                 android:layout_width="match_parent"
                 android:layout_height="1dp"

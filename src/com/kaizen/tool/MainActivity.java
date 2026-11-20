@@ -316,29 +316,39 @@ public class MainActivity extends Activity {
                     // v1.1-m6: gói split (.apks/.xapk/.apkm) đi chung nhánh này
                     final FileItem apkItem = item;
                     final boolean bundle = SplitApkInstaller.isBundleName(item.name);
-                    new CatBuilder(MainActivity.this, R.style.DialogTheme)
+                    // Sakuga: nut Cai dat/Xem/Huy bang SakugaButton.
+                    // test7: apkContent them padding ngang 16dp (truoc day
+                    // khong co padding nen hang nut cham sat me phai dialog
+                    // va nut Huy bi cat).
+                    LinearLayout apkContent = new LinearLayout(MainActivity.this);
+                    apkContent.setOrientation(LinearLayout.VERTICAL);
+                    int apkPad = SakugaFx.dp(MainActivity.this, 16);
+                    apkContent.setPadding(apkPad, 0, apkPad, 0);
+                    final SakugaDialogs.Holder apkHolder = SakugaDialogs.holder();
+                    SakugaDialogs.addButtonRow(MainActivity.this, apkContent, apkHolder,
+                            new SakugaDialogs.Action("Cài đặt", true, new SakugaDialogs.OnAction() {
+                                @Override public boolean run(android.app.AlertDialog dialog) {
+                                    if (bundle) {
+                                        installBundleFromItem(apkItem);
+                                    } else {
+                                        ApkDialogs.showInstall(
+                                                MainActivity.this, apkItem.file);
+                                    }
+                                    return true;
+                                }
+                            }),
+                            new SakugaDialogs.Action("Xem", false, new SakugaDialogs.OnAction() {
+                                @Override public boolean run(android.app.AlertDialog dialog) {
+                                    viewApk(apkItem);
+                                    return true;
+                                }
+                            }),
+                            new SakugaDialogs.Action("Hủy", false, null));
+                    android.app.AlertDialog apkDialog = new CatBuilder(MainActivity.this, R.style.DialogTheme)
                             .setTitle(item.name)
-                            .setPositiveButton("Cài đặt",
-                                    new DialogInterface.OnClickListener() {
-                                        @Override public void onClick(
-                                                DialogInterface d, int which) {
-                                            if (bundle) {
-                                                installBundleFromItem(apkItem);
-                                            } else {
-                                                ApkDialogs.showInstall(
-                                                        MainActivity.this, apkItem.file);
-                                            }
-                                        }
-                                    })
-                            .setNeutralButton("Xem",
-                                    new DialogInterface.OnClickListener() {
-                                        @Override public void onClick(
-                                                DialogInterface d, int which) {
-                                            viewApk(apkItem);
-                                        }
-                                    })
-                            .setNegativeButton("Hủy", null)
+                            .setView(apkContent)
                             .show();
+                    apkHolder.dialog = apkDialog;
                 } else {
                     // Trình xem media trong app (ảnh/video/nhạc)
                     int mt = MediaHelper.mediaTypeOf(item.name);
@@ -651,10 +661,38 @@ public class MainActivity extends Activity {
             }
         }
 
-        v.findViewById(R.id.gs_cancel).setOnClickListener(
-                new android.view.View.OnClickListener() {
-                    @Override public void onClick(android.view.View vv) { dlg.dismiss(); }
-                });
+        // Sakuga: nut HUY / TIM bang SakugaButton (thay TextView gia nut).
+        // test5: compact (nut dialog nho gon).
+        final SakugaButton gsCancel = (SakugaButton) v.findViewById(R.id.gs_cancel);
+        gsCancel.setCompact(true);
+        gsCancel.setVariant(SakugaButton.VARIANT_SECONDARY);
+        gsCancel.setOnClickListener(new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View vv) {
+                gsCancel.done();
+                vv.postDelayed(new Runnable() {
+                    @Override public void run() { dlg.dismiss(); }
+                }, 320);
+            }
+        });
+        final SakugaButton gsGo = (SakugaButton) v.findViewById(R.id.gs_go);
+        gsGo.setCompact(true);
+        gsGo.setOnClickListener(new android.view.View.OnClickListener() {
+            @Override public void onClick(android.view.View vv) {
+                final String kw = input.getText().toString().trim();
+                if (kw.isEmpty()) {
+                    toast("Nhập từ khóa để tìm");
+                    return; // khong dap tick, khong dong
+                }
+                gsGo.done();
+                vv.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        dlg.dismiss();
+                        saveSearchHistory(kw);
+                        startGlobalSearch(kw, modeFromChecked(modeGroup));
+                    }
+                }, 320);
+            }
+        });
         final Runnable doSearch = new Runnable() {
             @Override public void run() {
                 String kw = input.getText().toString().trim();
@@ -667,10 +705,6 @@ public class MainActivity extends Activity {
                 startGlobalSearch(kw, modeFromChecked(modeGroup));
             }
         };
-        v.findViewById(R.id.gs_go).setOnClickListener(
-                new android.view.View.OnClickListener() {
-                    @Override public void onClick(android.view.View vv) { doSearch.run(); }
-                });
         input.setOnEditorActionListener(
                 new android.widget.TextView.OnEditorActionListener() {
                     @Override public boolean onEditorAction(android.widget.TextView tv,
@@ -728,19 +762,37 @@ public class MainActivity extends Activity {
     /** M5: chạy tìm kiếm đệ quy trên background thread, progress có nút Hủy. */
     private void startGlobalSearch(final String keyword, final int mode) {
         final CancelToken token = new CancelToken();
-        final ProgressDialog pd = new ProgressDialog(this, CharacterTheme.dialogTheme(this));
-        pd.setTitle("\u0110ang t\u00ecm ki\u1ebfm to\u00e0n m\u00e1y...");
-        pd.setProgressStyle(ProgressDialog.STYLE_SPINNER);
-        pd.setMessage(keyword);
-        pd.setCancelable(false);
-        pd.setButton(DialogInterface.BUTTON_NEGATIVE, "H\u1ee7y",
-                new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int which) {
+        // Sakuga: ProgressDialog goc khong gan duoc SakugaButton nen dung
+        // lai bang AlertDialog tu che: spinner + duong dan dang tim + nut Huy.
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        int p = dp(20);
+        content.setPadding(p, p, p, p);
+        ProgressBar spinner = new ProgressBar(this);
+        LinearLayout.LayoutParams sp = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        sp.gravity = Gravity.CENTER_HORIZONTAL;
+        content.addView(spinner, sp);
+        final TextView msgView = new TextView(this);
+        msgView.setText(keyword);
+        msgView.setTextSize(14);
+        msgView.setPadding(0, dp(12), 0, 0);
+        content.addView(msgView);
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, content, holder,
+                new SakugaDialogs.Action("Hủy", false, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(android.app.AlertDialog dialog) {
                         token.cancel();
+                        return true;
                     }
-                });
-        pd.show();
-        CatPopup.apply(pd); // nền mèo cho dialog progress tìm kiếm (không phải dialog Rem)
+                }));
+        final android.app.AlertDialog dlg = new CatBuilder(this, CharacterTheme.dialogTheme(this))
+                .setTitle("\u0110ang t\u00ecm ki\u1ebfm to\u00e0n m\u00e1y...")
+                .setView(content)
+                .setCancelable(false)
+                .show();
+        holder.dialog = dlg;
 
         final File root = Environment.getExternalStorageDirectory();
         new Thread(new Runnable() {
@@ -749,7 +801,7 @@ public class MainActivity extends Activity {
                     @Override public void onProgress(final String path) {
                         runOnUiThread(new Runnable() {
                             @Override public void run() {
-                                if (pd.isShowing()) pd.setMessage(path);
+                                if (dlg.isShowing()) msgView.setText(path);
                             }
                         });
                     }
@@ -758,7 +810,7 @@ public class MainActivity extends Activity {
                         runOnUiThread(new Runnable() {
                             @Override public void run() {
                                 try {
-                                    pd.dismiss();
+                                    dlg.dismiss();
                                 } catch (Exception e) {
                                     // ignore
                                 }
@@ -812,13 +864,20 @@ public class MainActivity extends Activity {
         // Giới hạn chiều cao để dialog không tràn màn hình khi nhiều kết quả
         LinearLayout lvWrap = new LinearLayout(this);
         lvWrap.setOrientation(LinearLayout.VERTICAL);
+        // test7: padding ngang 16dp nhu apkContent (khong thi nut cham me phai).
+        int lvPad = SakugaFx.dp(this, 16);
+        lvWrap.setPadding(lvPad, 0, lvPad, 0);
         lvWrap.addView(lv, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(360)));
+        // Sakuga: nut Dong bang SakugaButton (thay nut AlertDialog goc).
+        final SakugaDialogs.Holder searchHolder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, lvWrap, searchHolder,
+                new SakugaDialogs.Action("Đóng", false, null));
         final AlertDialog dlg = new CatBuilder(this, R.style.DialogTheme)
                 .setTitle("K\u1ebft qu\u1ea3 (" + results.size() + ")")
                 .setView(lvWrap)
-                .setNegativeButton("\u0110\u00f3ng", null)
                 .create();
+        searchHolder.dialog = dlg;
         lv.setOnItemClickListener(new AdapterView.OnItemClickListener() {
             @Override public void onItemClick(AdapterView<?> parent, View view,
                                               int position, long id) {
@@ -1053,22 +1112,30 @@ public class MainActivity extends Activity {
                             }
                             if (conflicts.size() > 5) msg.append("\n• ...");
                             msg.append("\n\nGhi đè lên các mục này?");
-                            new CatBuilder(MainActivity.this, R.style.DialogTheme)
-                                    .setTitle("Mục đã tồn tại")
-                                    .setMessage(msg.toString())
-                                    .setPositiveButton("Có", new DialogInterface.OnClickListener() {
-                                        @Override public void onClick(DialogInterface d, int w) {
+                            // Sakuga: nut Co/Huy bang SakugaButton.
+                            LinearLayout content = SakugaDialogs.messageLayout(
+                                    MainActivity.this, msg.toString());
+                            final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+                            SakugaDialogs.addButtonRow(MainActivity.this, content, holder,
+                                    new SakugaDialogs.Action("Có", true, new SakugaDialogs.OnAction() {
+                                        @Override public boolean run(android.app.AlertDialog dialog) {
                                             pushArchivesNow(staging, archives, originalDir, shizukuDst);
+                                            return true;
                                         }
-                                    })
-                                    .setNegativeButton("Hủy", new DialogInterface.OnClickListener() {
-                                        @Override public void onClick(DialogInterface d, int w) {
+                                    }),
+                                    new SakugaDialogs.Action("Hủy", false, new SakugaDialogs.OnAction() {
+                                        @Override public boolean run(android.app.AlertDialog dialog) {
                                             toast("Đã hủy ghi đè — file nén vẫn ở "
                                                     + staging.getAbsolutePath());
                                             loadDir();
+                                            return true;
                                         }
-                                    })
+                                    }));
+                            android.app.AlertDialog dialog = new CatBuilder(MainActivity.this, R.style.DialogTheme)
+                                    .setTitle("Mục đã tồn tại")
+                                    .setView(content)
                                     .show();
+                            holder.dialog = dialog;
                         }
                     });
                     return;
@@ -1353,16 +1420,23 @@ public class MainActivity extends Activity {
     }
 
     private void confirmRemoveBookmark(final String path) {
-        new CatBuilder(this, R.style.DialogTheme)
-                .setTitle("Xóa bookmark")
-                .setMessage("Xóa bookmark \"" + new File(path).getName() + "\"?")
-                .setPositiveButton("Xóa", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int which) {
+        // Sakuga: nut Xoa/Huy bang SakugaButton.
+        LinearLayout content = SakugaDialogs.messageLayout(this,
+                "Xóa bookmark \"" + new File(path).getName() + "\"?");
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, content, holder,
+                new SakugaDialogs.Action("Xóa", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(android.app.AlertDialog dialog) {
                         removeBookmark(path);
+                        return true;
                     }
-                })
-                .setNegativeButton("Hủy", null)
+                }),
+                new SakugaDialogs.Action("Hủy", false, null));
+        android.app.AlertDialog dialog = new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("Xóa bookmark")
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     private void toggleDrawer() {
@@ -1773,17 +1847,23 @@ public class MainActivity extends Activity {
 
     private void requestPermission() {
         if (Build.VERSION.SDK_INT >= 30) {
-            new CatBuilder(this, R.style.DialogTheme)
-                    .setTitle("Quyền truy cập file")
-                    .setMessage("Kaizen Tool cần quyền \"Tất cả file\" để quản lý file của bạn.")
-                    .setPositiveButton("Mở cài đặt", new DialogInterface.OnClickListener() {
-                        @Override
-                        public void onClick(DialogInterface d, int which) {
+            // Sakuga: nut Mo cai dat/De sau bang SakugaButton.
+            LinearLayout content = SakugaDialogs.messageLayout(this,
+                    "Kaizen Tool cần quyền \"Tất cả file\" để quản lý file của bạn.");
+            final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+            SakugaDialogs.addButtonRow(this, content, holder,
+                    new SakugaDialogs.Action("Mở cài đặt", true, new SakugaDialogs.OnAction() {
+                        @Override public boolean run(android.app.AlertDialog dialog) {
                             openAllFilesSettings();
+                            return true;
                         }
-                    })
-                    .setNegativeButton("Để sau", null)
+                    }),
+                    new SakugaDialogs.Action("Để sau", false, null));
+            android.app.AlertDialog dialog = new CatBuilder(this, R.style.DialogTheme)
+                    .setTitle("Quyền truy cập file")
+                    .setView(content)
                     .show();
+            holder.dialog = dialog;
         } else {
             requestPermissions(new String[]{
                     Manifest.permission.READ_EXTERNAL_STORAGE,
@@ -2571,23 +2651,31 @@ public class MainActivity extends Activity {
      * doc duoc toan bo noi dung). Huy thi xoa ngay ban staged.
      */
     private void openElevatedFile(final java.io.File staged, final String displayName) {
-        new CatBuilder(this, R.style.DialogTheme)
-                .setTitle("Mở file đặc quyền")
-                .setMessage("File \"" + displayName + "\" nằm ở thư mục đặc quyền "
+        // Sakuga: nut Mo/Huy bang SakugaButton.
+        LinearLayout content = SakugaDialogs.messageLayout(this,
+                "File \"" + displayName + "\" nằm ở thư mục đặc quyền "
                         + "và chỉ đọc được nhờ quyền cao (root/Shizuku).\n\n"
                         + "Bản copy sẽ được đưa cho app ngoài — app đó sẽ đọc "
-                        + "được toàn bộ nội dung. Vẫn mở?")
-                .setPositiveButton("Mở", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int w) {
+                        + "được toàn bộ nội dung. Vẫn mở?");
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, content, holder,
+                new SakugaDialogs.Action("Mở", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(android.app.AlertDialog dialog) {
                         openFile(staged);
+                        return true;
                     }
-                })
-                .setNegativeButton("Hủy", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int w) {
+                }),
+                new SakugaDialogs.Action("Hủy", false, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(android.app.AlertDialog dialog) {
                         deleteRecursive(staged);
+                        return true;
                     }
-                })
+                }));
+        android.app.AlertDialog dialog = new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("Mở file đặc quyền")
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     /** M5: đọc file hệ thống ra cache qua shell rồi mở bằng app khác. */
@@ -2674,12 +2762,14 @@ public class MainActivity extends Activity {
     /** M5: xóa file/thư mục hệ thống qua shell (có xác nhận + cảnh báo). */
     private void deleteRootItem(final FileItem item) {
         final String real = RootFileProvider.realPath(item.file.getPath());
-        new CatBuilder(this, R.style.DialogTheme)
-                .setTitle("Xóa mục hệ thống?")
-                .setMessage("\"" + item.name + "\"\n" + real
-                        + "\n\nCẩn thận: xóa nhầm file hệ thống có thể làm hỏng máy!")
-                .setPositiveButton("Xóa", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int which) {
+        // Sakuga: nut Xoa/Huy bang SakugaButton.
+        LinearLayout content = SakugaDialogs.messageLayout(this,
+                "\"" + item.name + "\"\n" + real
+                        + "\n\nCẩn thận: xóa nhầm file hệ thống có thể làm hỏng máy!");
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, content, holder,
+                new SakugaDialogs.Action("Xóa", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(android.app.AlertDialog dialog) {
                         runOpWithProgress("Đang xóa...", "Đã xóa", 1,
                                 new OpRunner() {
                                     @Override public void run(FileOps.OpCallback cb) {
@@ -2698,10 +2788,15 @@ public class MainActivity extends Activity {
                                         }
                                     }
                                 });
+                        return true;
                     }
-                })
-                .setNegativeButton("Hủy", null)
+                }),
+                new SakugaDialogs.Action("Hủy", false, null));
+        android.app.AlertDialog dialog = new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("Xóa mục hệ thống?")
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     /** M5: copy đường dẫn tuyệt đối vào clipboard. */
@@ -2726,24 +2821,36 @@ public class MainActivity extends Activity {
         if (!item.isDir) {
             info += "\nKích thước: " + FileOps.formatSize(item.size);
         }
-        new CatBuilder(this, R.style.DialogTheme)
+        // Sakuga: nut OK bang SakugaButton (giong nut DONG bang Thuoc tinh).
+        LinearLayout content = SakugaDialogs.messageLayout(this, info);
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, content, holder,
+                new SakugaDialogs.Action("OK", true, null));
+        android.app.AlertDialog dialog = new CatBuilder(this, R.style.DialogTheme)
                 .setTitle("Thuộc tính")
-                .setMessage(info)
-                .setPositiveButton("OK", null)
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     /** M5: tạo thư mục mới trong root mode qua shell. */
     private void rootMkdir() {
         final EditText input = new EditText(this);
         input.setHint("Tên thư mục");
-        new CatBuilder(this, R.style.DialogTheme)
-                .setTitle("Thư mục mới")
-                .setView(input)
-                .setPositiveButton("Tạo", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int which) {
+        // Sakuga: nut Tao/Huy bang SakugaButton.
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        int p = dp(16);
+        content.setPadding(p, dp(8), p, dp(4));
+        content.addView(input, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, content, holder,
+                new SakugaDialogs.Action("Tạo", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(android.app.AlertDialog dialog) {
                         final String name = input.getText().toString().trim();
-                        if (name.isEmpty() || rootDir == null) return;
+                        if (name.isEmpty() || rootDir == null) return false;
                         final String target = RootFileProvider.join(rootDir, name);
                         toast("Đang tạo...");
                         new Thread(new Runnable() {
@@ -2763,23 +2870,35 @@ public class MainActivity extends Activity {
                                 });
                             }
                         }).start();
+                        return true;
                     }
-                })
-                .setNegativeButton("Hủy", null)
+                }),
+                new SakugaDialogs.Action("Hủy", false, null));
+        android.app.AlertDialog dialog = new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("Thư mục mới")
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     /** M5: tạo file mới trong root mode qua shell. */
     private void rootTouch() {
         final EditText input = new EditText(this);
         input.setHint("Tên file");
-        new CatBuilder(this, R.style.DialogTheme)
-                .setTitle("File mới")
-                .setView(input)
-                .setPositiveButton("Tạo", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int which) {
+        // Sakuga: nut Tao/Huy bang SakugaButton.
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        int p = dp(16);
+        content.setPadding(p, dp(8), p, dp(4));
+        content.addView(input, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, content, holder,
+                new SakugaDialogs.Action("Tạo", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(android.app.AlertDialog dialog) {
                         final String name = input.getText().toString().trim();
-                        if (name.isEmpty() || rootDir == null) return;
+                        if (name.isEmpty() || rootDir == null) return false;
                         final String target = RootFileProvider.join(rootDir, name);
                         toast("Đang tạo...");
                         new Thread(new Runnable() {
@@ -2799,10 +2918,15 @@ public class MainActivity extends Activity {
                                 });
                             }
                         }).start();
+                        return true;
                     }
-                })
-                .setNegativeButton("Hủy", null)
+                }),
+                new SakugaDialogs.Action("Hủy", false, null));
+        android.app.AlertDialog dialog = new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("File mới")
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     // -------------------------------------------------- selection helpers
@@ -2954,16 +3078,23 @@ public class MainActivity extends Activity {
             dstName = (currentDir != null && !currentDir.getName().isEmpty())
                     ? currentDir.getName() : currentDir.getAbsolutePath();
         }
-        new CatBuilder(this, R.style.DialogTheme)
-                .setTitle(clipboardCut ? "Di chuyển " + n + " mục" : "Dán " + n + " mục")
-                .setMessage("Dán " + n + " mục vào \"" + dstName + "\"?")
-                .setPositiveButton("Dán", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int which) {
+        // Sakuga: nut Dan/Huy bang SakugaButton.
+        LinearLayout content = SakugaDialogs.messageLayout(this,
+                "Dán " + n + " mục vào \"" + dstName + "\"?");
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, content, holder,
+                new SakugaDialogs.Action("Dán", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(android.app.AlertDialog dialog) {
                         doPaste(n);
+                        return true;
                     }
-                })
-                .setNegativeButton("Hủy", null)
+                }),
+                new SakugaDialogs.Action("Hủy", false, null));
+        android.app.AlertDialog dialog = new CatBuilder(this, R.style.DialogTheme)
+                .setTitle(clipboardCut ? "Di chuyển " + n + " mục" : "Dán " + n + " mục")
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     /** Thực hiện copy/cut sau khi user xác nhận. */
@@ -3041,16 +3172,23 @@ public class MainActivity extends Activity {
                         }
                         if (conflicts.size() > 5) msg.append("\n• ...");
                         msg.append("\n\nGhi đè lên các mục này?");
-                        new CatBuilder(MainActivity.this, R.style.DialogTheme)
-                                .setTitle("Mục đã tồn tại")
-                                .setMessage(msg.toString())
-                                .setPositiveButton("Có", new DialogInterface.OnClickListener() {
-                                    @Override public void onClick(DialogInterface d, int w) {
+                        // Sakuga: nut Co/Huy bang SakugaButton.
+                        LinearLayout content = SakugaDialogs.messageLayout(
+                                MainActivity.this, msg.toString());
+                        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+                        SakugaDialogs.addButtonRow(MainActivity.this, content, holder,
+                                new SakugaDialogs.Action("Có", true, new SakugaDialogs.OnAction() {
+                                    @Override public boolean run(android.app.AlertDialog dialog) {
                                         doPasteChecked(count, true);
+                                        return true;
                                     }
-                                })
-                                .setNegativeButton("Hủy", null)
+                                }),
+                                new SakugaDialogs.Action("Hủy", false, null));
+                        android.app.AlertDialog dialog = new CatBuilder(MainActivity.this, R.style.DialogTheme)
+                                .setTitle("Mục đã tồn tại")
+                                .setView(content)
                                 .show();
+                        holder.dialog = dialog;
                     }
                 });
             }
@@ -3285,39 +3423,53 @@ public class MainActivity extends Activity {
         if (entries != null) {
             // v1.1-m3: "Sao chép" entry — bung thẳng các mục vào thư mục đã chọn.
             final String label = entries.size() + " mục";
-            new CatBuilder(this, R.style.DialogTheme)
-                    .setTitle("Sao chép " + label)
-                    .setMessage("Sao chép vào \"" + dstName + "\"?")
-                    .setPositiveButton("Sao chép", new DialogInterface.OnClickListener() {
-                        @Override public void onClick(DialogInterface d, int which) {
+            // Sakuga: nut Sao chep/Huy bang SakugaButton.
+            LinearLayout content = SakugaDialogs.messageLayout(this,
+                    "Sao chép vào \"" + dstName + "\"?");
+            final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+            SakugaDialogs.addButtonRow(this, content, holder,
+                    new SakugaDialogs.Action("Sao chép", true, new SakugaDialogs.OnAction() {
+                        @Override public boolean run(android.app.AlertDialog dialog) {
                             exitExtractPickMode();
                             ArchiveDialogs.extractEntriesDirect(MainActivity.this, af, kind,
                                     entries, pickedDir, new Runnable() {
                                         @Override public void run() { loadDir(); }
                                     });
+                            return true;
                         }
-                    })
-                    .setNegativeButton("Hủy", null)
+                    }),
+                    new SakugaDialogs.Action("Hủy", false, null));
+            android.app.AlertDialog dialog = new CatBuilder(this, R.style.DialogTheme)
+                    .setTitle("Sao chép " + label)
+                    .setView(content)
                     .show();
+            holder.dialog = dialog;
             return;
         }
         // v1.1-m3 (fix theo yêu cầu): "Giải nén..." — bung vào folder cùng tên file nén.
         final String base = ArchiveDialogs.stripExtension(af.getName());
         final File destDir = new File(pickedDir, base);
-        new CatBuilder(this, R.style.DialogTheme)
-                .setTitle("Giải nén \"" + af.getName() + "\"")
-                .setMessage("Giải nén vào \"./" + base + "/\"?")
-                .setPositiveButton("Giải nén", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int which) {
+        // Sakuga: nut Giai nen/Huy bang SakugaButton.
+        LinearLayout content2 = SakugaDialogs.messageLayout(this,
+                "Giải nén vào \"./" + base + "/\"?");
+        final SakugaDialogs.Holder holder2 = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, content2, holder2,
+                new SakugaDialogs.Action("Giải nén", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(android.app.AlertDialog dialog) {
                         exitExtractPickMode();
                         ArchiveDialogs.extractDirect(MainActivity.this, af, kind,
                                 destDir, new Runnable() {
                                     @Override public void run() { loadDir(); }
                                 });
+                        return true;
                     }
-                })
-                .setNegativeButton("Hủy", null)
+                }),
+                new SakugaDialogs.Action("Hủy", false, null));
+        android.app.AlertDialog dialog2 = new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("Giải nén \"" + af.getName() + "\"")
+                .setView(content2)
                 .show();
+        holder2.dialog = dialog2;
     }
 
     // -------------------------------------------------- v1.1-m3: Thông tin / Đổi tên / Xóa entry trong archive
@@ -3335,11 +3487,16 @@ public class MainActivity extends Activity {
         if (item.lastModified > 0) {
             sb.append("Ngày sửa: ").append(FileOps.formatDate(item.lastModified));
         }
-        new CatBuilder(this, R.style.DialogTheme)
+        // Sakuga: nut Dong bang SakugaButton (giong nut DONG bang Thuoc tinh).
+        LinearLayout content = SakugaDialogs.messageLayout(this, sb.toString().trim());
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, content, holder,
+                new SakugaDialogs.Action("Đóng", true, null));
+        android.app.AlertDialog dialog = new CatBuilder(this, R.style.DialogTheme)
                 .setTitle("Thông tin")
-                .setMessage(sb.toString().trim())
-                .setPositiveButton("Đóng", null)
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     /** Đổi tên 1 entry trong archive (ZIP/7Z) qua 7zz rn. */
@@ -3363,18 +3520,19 @@ public class MainActivity extends Activity {
         layout.addView(input,
                 new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
                         LinearLayout.LayoutParams.WRAP_CONTENT));
-        new CatBuilder(this, R.style.DialogTheme)
-                .setTitle("Đổi tên")
-                .setView(layout)
-                .setPositiveButton("Đổi tên", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int which) {
+        // Sakuga: nut Doi ten/Huy bang SakugaButton. Ten sai -> tra false
+        // de giu dialog mo cho user sua; ten giong cu thi dong luon.
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, layout, holder,
+                new SakugaDialogs.Action("Đổi tên", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(android.app.AlertDialog dialog) {
                         String newName = input.getText().toString().trim();
                         if (newName.isEmpty() || newName.contains("/")
                                 || newName.contains("\\")) {
                             toast("Tên không hợp lệ");
-                            return;
+                            return false;
                         }
-                        if (newName.equals(item.name)) return;
+                        if (newName.equals(item.name)) return true;
                         final String newEntry =
                                 archiveDir + newName + (item.isDir ? "/" : "");
                         if (ArchiveUtils.needsPassword(af, kind)) {
@@ -3388,10 +3546,15 @@ public class MainActivity extends Activity {
                         } else {
                             runRenameEntryOp(af, kind, oldEntry, newEntry, null);
                         }
+                        return true;
                     }
-                })
-                .setNegativeButton("Hủy", null)
+                }),
+                new SakugaDialogs.Action("Hủy", false, null));
+        android.app.AlertDialog dialog = new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("Đổi tên")
+                .setView(layout)
                 .show();
+        holder.dialog = dialog;
     }
 
     private void runRenameEntryOp(final File af, final int kind,
@@ -3416,16 +3579,23 @@ public class MainActivity extends Activity {
         final File af = archiveFile;
         final int kind = archiveKind;
         if (af == null) return;
-        new CatBuilder(this, R.style.DialogTheme)
-                .setTitle("Xóa")
-                .setMessage("Xóa \"" + item.name + "\" khỏi archive?")
-                .setPositiveButton("Xóa", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int which) {
+        // Sakuga: nut Xoa/Huy bang SakugaButton.
+        LinearLayout content = SakugaDialogs.messageLayout(this,
+                "Xóa \"" + item.name + "\" khỏi archive?");
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, content, holder,
+                new SakugaDialogs.Action("Xóa", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(android.app.AlertDialog dialog) {
                         collectEntriesAndDelete(af, kind, item);
+                        return true;
                     }
-                })
-                .setNegativeButton("Hủy", null)
+                }),
+                new SakugaDialogs.Action("Hủy", false, null));
+        android.app.AlertDialog dialog = new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("Xóa")
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     /** Gom entry (mở rộng thư mục thành toàn bộ entry con) rồi xóa. */

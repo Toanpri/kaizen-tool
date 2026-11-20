@@ -6,7 +6,6 @@ import java.util.List;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.app.Dialog;
-import android.content.DialogInterface;
 import android.graphics.Color;
 import android.graphics.drawable.ClipDrawable;
 import android.graphics.drawable.Drawable;
@@ -19,8 +18,6 @@ import android.view.Window;
 import android.view.WindowManager;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
-import android.widget.CheckBox;
-import android.widget.CompoundButton;
 import android.widget.EditText;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -87,7 +84,17 @@ public class ArchiveDialogs {
         final EditText pwInput = (EditText) v.findViewById(R.id.cmp_password);
         final Button pwEye = (Button) v.findViewById(R.id.cmp_pw_eye);
         final Spinner splitSpinner = (Spinner) v.findViewById(R.id.cmp_split);
-        final CheckBox delSrcBox = (CheckBox) v.findViewById(R.id.cmp_delete_src);
+        // Sakuga: CheckBox goc -> SakugaCheckBox (tick hong + burst + ポン).
+        final SakugaCheckBox delSrcBox =
+                (SakugaCheckBox) v.findViewById(R.id.cmp_delete_src);
+        android.view.View delSrcLabel = v.findViewById(R.id.cmp_delete_src_label);
+        if (delSrcLabel != null) {
+            delSrcLabel.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View vv) {
+                    delSrcBox.toggle();
+                }
+            });
+        }
 
         // --- format ---
         ArrayAdapter<String> fmtAdapter = new ArrayAdapter<String>(a,
@@ -181,82 +188,88 @@ public class ArchiveDialogs {
             }
         });
 
+        // Sakuga: nut OK/HUY bang SakugaButton (thay nut AlertDialog goc).
+        // OK that bai (ten rong / chua "/" / chua nhap mk) -> tra false de
+        // giu dialog mo (giong y dinh cua listener gan sau ban cu).
+        // OK thanh cong -> chay nen, helper dap tick + dong dialog sau 320ms.
+        LinearLayout cmpRoot = (LinearLayout) v.findViewById(R.id.cmp_root);
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(a, cmpRoot, holder,
+                new SakugaDialogs.Action("OK", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(AlertDialog dialog) {
+                        final int fmt = fmtSpinner.getSelectedItemPosition();
+                        String name = nameInput.getText().toString().trim();
+                        if (name.isEmpty()) {
+                            Toast.makeText(a, "Tên file nén không được để trống", Toast.LENGTH_SHORT).show();
+                            return false;
+                        }
+                        if (name.contains("/")) {
+                            Toast.makeText(a, "Tên file không được chứa ký tự /", Toast.LENGTH_SHORT).show();
+                            return false;
+                        }
+                        String ext = FMT_EXTS[fmt < 0 ? FMT_ZIP : fmt];
+                        if (!name.toLowerCase().endsWith(ext)) {
+                            name = stripKnownExtension(name) + ext;
+                        }
+                        final boolean encrypted = encSpinner.getSelectedItemPosition() > 0;
+                        final String password = pwInput.getText().toString();
+                        if (encrypted && password.isEmpty()) {
+                            Toast.makeText(a, "Chưa nhập mật khẩu", Toast.LENGTH_SHORT).show();
+                            return false;
+                        }
+                        File dir = currentDir != null ? currentDir : a.getFilesDir();
+                        final File dest = new File(dir, name);
+                        final int level = levelValues[levelSpinner.getSelectedItemPosition()];
+                        final long splitSize = SPLIT_SIZES[splitSpinner.getSelectedItemPosition()];
+                        final boolean deleteSrc = delSrcBox.isChecked();
+                        final String fmtLabel = FMT_LABELS[fmt < 0 ? FMT_ZIP : fmt];
+                        final int fmtFinal = fmt < 0 ? FMT_ZIP : fmt;
+                        final String pwFinal = encrypted ? password : null;
+                        final String finalName = name;
+                        final String finalExt = ext;
+
+                        splitDestDir = dir;
+                        destName = finalName;
+                        destExt = finalExt;
+                        runArchiveOp(a, "Đang nén (" + fmtLabel + ")...", new Op() {
+                            @Override
+                            public void start(FileOps.OpCallback cb, CancelToken token) {
+                                FileOps.OpCallback wrapped = (splitSize > 0 || deleteSrc)
+                                        ? new SplitDeleteCallback(a, cb, token, splitSize, deleteSrc, sources)
+                                        : cb;
+                                if (fmtFinal == FMT_7Z) {
+                                    // v1.1-m3: thử 7zz native (đa luồng, siêu nhanh) trước,
+                                    // không được thì fallback sang Java.
+                                    if (!Native7z.compress(a, Native7z.FMT_7Z, sources, dest,
+                                            level, pwFinal, wrapped, token)) {
+                                        SevenZUtils.create7z(sources, dest, level, wrapped, token);
+                                    }
+                                } else if (fmtFinal == FMT_REM) {
+                                    RemArchive.createRem(sources, dest, level, pwFinal, wrapped, token);
+                                } else if (pwFinal != null) {
+                                    if (!Native7z.compress(a, Native7z.FMT_ZIP, sources, dest,
+                                            level, pwFinal, wrapped, token)) {
+                                        ZipUtils.createZipEncrypted(sources, dest, level, pwFinal, wrapped, token);
+                                    }
+                                } else {
+                                    if (!Native7z.compress(a, Native7z.FMT_ZIP, sources, dest,
+                                            level, null, wrapped, token)) {
+                                        ZipUtils.createZip(sources, dest, level, wrapped, token);
+                                    }
+                                }
+                            }
+                        }, "Đã nén xong: " + dest.getName(), onDone);
+                        return true;
+                    }
+                }),
+                new SakugaDialogs.Action("HUỶ", false, null));
         final AlertDialog dlg = new CatBuilder(a, R.style.DialogTheme)
                 .setTitle("Tạo tệp lưu trữ")
                 .setView(v)
-                .setPositiveButton("OK", null) // gắn listener sau để validate không tắt dialog
-                .setNegativeButton("HUỶ", null)
                 .create();
         dlg.show();
         CatPopup.apply(dlg); // nền mèo (trừ dialog tiến trình Rem)
-        Button okBtn = dlg.getButton(DialogInterface.BUTTON_POSITIVE);
-        okBtn.setOnClickListener(new View.OnClickListener() {
-            @Override public void onClick(View vv) {
-                final int fmt = fmtSpinner.getSelectedItemPosition();
-                String name = nameInput.getText().toString().trim();
-                if (name.isEmpty()) {
-                    Toast.makeText(a, "Tên file nén không được để trống", Toast.LENGTH_SHORT).show();
-                    return;
-                }
-                if (name.contains("/")) {
-                    Toast.makeText(a, "Tên file không được chứa ký tự /", Toast.LENGTH_SHORT).show();
-                    return;
-                }
-                String ext = FMT_EXTS[fmt < 0 ? FMT_ZIP : fmt];
-                if (!name.toLowerCase().endsWith(ext)) {
-                    name = stripKnownExtension(name) + ext;
-                }
-                final boolean encrypted = encSpinner.getSelectedItemPosition() > 0;
-                final String password = pwInput.getText().toString();
-                if (encrypted && password.isEmpty()) {
-                    Toast.makeText(a, "Chưa nhập mật khẩu", Toast.LENGTH_SHORT).show();
-                    return;
-                }
-                File dir = currentDir != null ? currentDir : a.getFilesDir();
-                final File dest = new File(dir, name);
-                final int level = levelValues[levelSpinner.getSelectedItemPosition()];
-                final long splitSize = SPLIT_SIZES[splitSpinner.getSelectedItemPosition()];
-                final boolean deleteSrc = delSrcBox.isChecked();
-                final String fmtLabel = FMT_LABELS[fmt < 0 ? FMT_ZIP : fmt];
-                final int fmtFinal = fmt < 0 ? FMT_ZIP : fmt;
-                final String pwFinal = encrypted ? password : null;
-                final String finalName = name;
-                final String finalExt = ext;
-
-                dlg.dismiss();
-                splitDestDir = dir;
-                destName = finalName;
-                destExt = finalExt;
-                runArchiveOp(a, "Đang nén (" + fmtLabel + ")...", new Op() {
-                    @Override
-                    public void start(FileOps.OpCallback cb, CancelToken token) {
-                        FileOps.OpCallback wrapped = (splitSize > 0 || deleteSrc)
-                                ? new SplitDeleteCallback(a, cb, token, splitSize, deleteSrc, sources)
-                                : cb;
-                        if (fmtFinal == FMT_7Z) {
-                            // v1.1-m3: thử 7zz native (đa luồng, siêu nhanh) trước,
-                            // không được thì fallback sang Java.
-                            if (!Native7z.compress(a, Native7z.FMT_7Z, sources, dest,
-                                    level, pwFinal, wrapped, token)) {
-                                SevenZUtils.create7z(sources, dest, level, wrapped, token);
-                            }
-                        } else if (fmtFinal == FMT_REM) {
-                            RemArchive.createRem(sources, dest, level, pwFinal, wrapped, token);
-                        } else if (pwFinal != null) {
-                            if (!Native7z.compress(a, Native7z.FMT_ZIP, sources, dest,
-                                    level, pwFinal, wrapped, token)) {
-                                ZipUtils.createZipEncrypted(sources, dest, level, pwFinal, wrapped, token);
-                            }
-                        } else {
-                            if (!Native7z.compress(a, Native7z.FMT_ZIP, sources, dest,
-                                    level, null, wrapped, token)) {
-                                ZipUtils.createZip(sources, dest, level, wrapped, token);
-                            }
-                        }
-                    }
-                }, "Đã nén xong: " + dest.getName(), onDone);
-            }
-        });
+        holder.dialog = dlg;
     }
 
     /**
@@ -445,24 +458,37 @@ public class ArchiveDialogs {
                                           final int kind,
                                           final Runnable onOpen, final Runnable onExtract) {
         if (a == null || archiveFile == null) return;
-        AlertDialog.Builder b = new CatBuilder(a, R.style.DialogTheme)
-                .setTitle(archiveFile.getName());
-        if (onOpen != null && ArchiveUtils.isBrowsable(kind)) {
-            b.setPositiveButton("Mở", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface d, int which) {
+        // Sakuga: nut Mo/Giai nen/Huy bang SakugaButton (thay nut goc).
+        // Dialog nay chi co tieu de + nut nen content la layout trong.
+        final boolean hasOpen = onOpen != null && ArchiveUtils.isBrowsable(kind);
+        LinearLayout content = new LinearLayout(a);
+        content.setOrientation(LinearLayout.VERTICAL);
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        java.util.List<SakugaDialogs.Action> acts =
+                new java.util.ArrayList<SakugaDialogs.Action>();
+        if (hasOpen) {
+            acts.add(new SakugaDialogs.Action("Mở", true, new SakugaDialogs.OnAction() {
+                @Override public boolean run(AlertDialog dialog) {
                     onOpen.run();
+                    return true;
                 }
-            });
+            }));
         }
-        b.setNeutralButton("Giải nén", new DialogInterface.OnClickListener() {
-            @Override
-            public void onClick(DialogInterface d, int which) {
+        // "Giải nén" la nut chinh khi khong co "Mở", phu khi co "Mở".
+        acts.add(new SakugaDialogs.Action("Giải nén", !hasOpen, new SakugaDialogs.OnAction() {
+            @Override public boolean run(AlertDialog dialog) {
                 if (onExtract != null) onExtract.run();
+                return true;
             }
-        });
-        b.setNegativeButton("Hủy", null);
-        b.show();
+        }));
+        acts.add(new SakugaDialogs.Action("Hủy", false, null));
+        SakugaDialogs.addButtonRow(a, content, holder,
+                acts.toArray(new SakugaDialogs.Action[acts.size()]));
+        AlertDialog dialog = new CatBuilder(a, R.style.DialogTheme)
+                .setTitle(archiveFile.getName())
+                .setView(content)
+                .show();
+        holder.dialog = dialog;
     }
 
     // ------------------------------------------------------------------
@@ -731,20 +757,27 @@ public class ArchiveDialogs {
                         }
                         if (conflicts.size() > 5) msg.append("\n• ...");
                         msg.append("\n\nGhi đè lên các mục này?");
-                        new CatBuilder(a, R.style.DialogTheme)
-                                .setTitle("Mục đã tồn tại")
-                                .setMessage(msg.toString())
-                                .setPositiveButton("Có", new DialogInterface.OnClickListener() {
-                                    @Override public void onClick(DialogInterface d, int w) {
+                        // Sakuga: nut Co/Huy bang SakugaButton.
+                        LinearLayout content = SakugaDialogs.messageLayout(a, msg.toString());
+                        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+                        SakugaDialogs.addButtonRow(a, content, holder,
+                                new SakugaDialogs.Action("Có", true, new SakugaDialogs.OnAction() {
+                                    @Override public boolean run(AlertDialog dialog) {
                                         choice.onProceed(true);
+                                        return true;
                                     }
-                                })
-                                .setNegativeButton("Hủy", new DialogInterface.OnClickListener() {
-                                    @Override public void onClick(DialogInterface d, int w) {
+                                }),
+                                new SakugaDialogs.Action("Hủy", false, new SakugaDialogs.OnAction() {
+                                    @Override public boolean run(AlertDialog dialog) {
                                         choice.onCancel();
+                                        return true;
                                     }
-                                })
+                                }));
+                        AlertDialog dialog = new CatBuilder(a, R.style.DialogTheme)
+                                .setTitle("Mục đã tồn tại")
+                                .setView(content)
                                 .show();
+                        holder.dialog = dialog;
                     }
                 });
             }
@@ -766,22 +799,50 @@ public class ArchiveDialogs {
                 "Giải nén vào ./ " + base + "/",
                 "Giải nén..."
         };
-        new CatBuilder(a, R.style.DialogTheme)
-                .setTitle(archiveFile.getName())
-                .setItems(items, new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int which) {
-                        if (which == 0) {
-                            extractDirect(a, archiveFile, kind, currentDir, onDone);
-                        } else if (which == 1) {
-                            File sub = new File(currentDir, base);
-                            extractDirect(a, archiveFile, kind, sub, onDone);
-                        } else {
-                            if (onPickDest != null) onPickDest.run();
-                        }
+        // Sakuga: dialog list goc khong co cho gan SakugaButton vao hang
+        // nut nen dung lai bang custom view: 3 dong lua chon + nut Huy
+        // Sakuga. Bam 1 dong = chay hanh dong do roi dong dialog (nhu
+        // setItems goc).
+        LinearLayout content = new LinearLayout(a);
+        content.setOrientation(LinearLayout.VERTICAL);
+        int p = dp(a, 16);
+        content.setPadding(p, dp(a, 8), p, dp(a, 4));
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        for (int i = 0; i < items.length; i++) {
+            final int which = i;
+            TextView row = new TextView(a);
+            row.setText(items[i]);
+            row.setTextSize(16);
+            row.setTextColor(0xFF333333);
+            row.setPadding(0, dp(a, 12), 0, dp(a, 12));
+            row.setOnClickListener(new View.OnClickListener() {
+                @Override public void onClick(View v) {
+                    if (which == 0) {
+                        extractDirect(a, archiveFile, kind, currentDir, onDone);
+                    } else if (which == 1) {
+                        File sub = new File(currentDir, base);
+                        extractDirect(a, archiveFile, kind, sub, onDone);
+                    } else {
+                        if (onPickDest != null) onPickDest.run();
                     }
-                })
-                .setNegativeButton("Hủy", null)
+                    if (holder.dialog != null) holder.dialog.dismiss();
+                }
+            });
+            content.addView(row);
+            if (i < items.length - 1) {
+                View div = new View(a);
+                div.setBackgroundColor(0xFFE0E0E0);
+                content.addView(div, new LinearLayout.LayoutParams(
+                        LinearLayout.LayoutParams.MATCH_PARENT, dp(a, 1)));
+            }
+        }
+        SakugaDialogs.addButtonRow(a, content, holder,
+                new SakugaDialogs.Action("Hủy", false, null));
+        AlertDialog dialog = new CatBuilder(a, R.style.DialogTheme)
+                .setTitle(archiveFile.getName())
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     /** "Gemini Translate.zip" -> "Gemini Translate" */
@@ -947,24 +1008,27 @@ public class ArchiveDialogs {
                         }
                         if (conflicts.size() > 5) msg.append("\n• ...");
                         msg.append("\n\nGhi đè lên các mục này?");
-                        new CatBuilder(a, R.style.DialogTheme)
+                        // Sakuga: nut Co/Huy bang SakugaButton.
+                        LinearLayout content = SakugaDialogs.messageLayout(a, msg.toString());
+                        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+                        SakugaDialogs.addButtonRow(a, content, holder,
+                                new SakugaDialogs.Action("Có", true, new SakugaDialogs.OnAction() {
+                                    @Override public boolean run(AlertDialog dialog) {
+                                        choice.onProceed();
+                                        return true;
+                                    }
+                                }),
+                                new SakugaDialogs.Action("Hủy", false, new SakugaDialogs.OnAction() {
+                                    @Override public boolean run(AlertDialog dialog) {
+                                        choice.onCancel();
+                                        return true;
+                                    }
+                                }));
+                        AlertDialog dialog = new CatBuilder(a, R.style.DialogTheme)
                                 .setTitle("Mục đã tồn tại")
-                                .setMessage(msg.toString())
-                                .setPositiveButton("Có",
-                                        new DialogInterface.OnClickListener() {
-                                            @Override public void onClick(
-                                                    DialogInterface d, int w) {
-                                                choice.onProceed();
-                                            }
-                                        })
-                                .setNegativeButton("Hủy",
-                                        new DialogInterface.OnClickListener() {
-                                            @Override public void onClick(
-                                                    DialogInterface d, int w) {
-                                                choice.onCancel();
-                                            }
-                                        })
+                                .setView(content)
                                 .show();
+                        holder.dialog = dialog;
                     }
                 });
             }
@@ -1192,22 +1256,27 @@ public class ArchiveDialogs {
                     @Override public void run() {
                         if (a.isFinishing()) return;
                         if (needF > 0 && free > 0 && needF > free) {
-                            new CatBuilder(a, R.style.DialogTheme)
-                                    .setTitle("Sắp hết dung lượng")
-                                    .setMessage("Giải nén cần khoảng "
+                            // Sakuga: nut Van tiep tuc/Huy bang SakugaButton.
+                            LinearLayout content = SakugaDialogs.messageLayout(a,
+                                    "Giải nén cần khoảng "
                                             + FileOps.formatSize(needF)
                                             + " nhưng thư mục đích chỉ còn trống "
                                             + FileOps.formatSize(free)
-                                            + ". Vẫn tiếp tục?")
-                                    .setPositiveButton("Vẫn tiếp tục",
-                                            new DialogInterface.OnClickListener() {
-                                                @Override public void onClick(
-                                                        DialogInterface d, int w) {
-                                                    proceed.run();
-                                                }
-                                            })
-                                    .setNegativeButton("Hủy", null)
+                                            + ". Vẫn tiếp tục?");
+                            final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+                            SakugaDialogs.addButtonRow(a, content, holder,
+                                    new SakugaDialogs.Action("Vẫn tiếp tục", true, new SakugaDialogs.OnAction() {
+                                        @Override public boolean run(AlertDialog dialog) {
+                                            proceed.run();
+                                            return true;
+                                        }
+                                    }),
+                                    new SakugaDialogs.Action("Hủy", false, null));
+                            AlertDialog dialog = new CatBuilder(a, R.style.DialogTheme)
+                                    .setTitle("Sắp hết dung lượng")
+                                    .setView(content)
                                     .show();
+                            holder.dialog = dialog;
                         } else {
                             proceed.run();
                         }
@@ -1318,20 +1387,26 @@ public class ArchiveDialogs {
         row.addView(eye);
         layout.addView(row);
 
-        new CatBuilder(a, R.style.DialogTheme)
+        // Sakuga: nut OK/Huy bang SakugaButton (thay nut AlertDialog goc).
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(a, layout, holder,
+                new SakugaDialogs.Action("OK", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(AlertDialog dialog) {
+                        listener.onPassword(pwInput.getText().toString());
+                        return true;
+                    }
+                }),
+                new SakugaDialogs.Action("Hủy", false, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(AlertDialog dialog) {
+                        listener.onPassword(null);
+                        return true;
+                    }
+                }));
+        AlertDialog dialog = new CatBuilder(a, R.style.DialogTheme)
                 .setTitle("File mã hóa")
                 .setView(layout)
-                .setPositiveButton("OK", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int which) {
-                        listener.onPassword(pwInput.getText().toString());
-                    }
-                })
-                .setNegativeButton("Hủy", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int which) {
-                        listener.onPassword(null);
-                    }
-                })
                 .show();
+        holder.dialog = dialog;
     }
 
     private static void startExtract(final Activity a, final File destDir, final boolean overwrite,
@@ -1363,22 +1438,34 @@ public class ArchiveDialogs {
         pathInput.setText(defaultDestDir != null ? defaultDestDir.getAbsolutePath() : "");
         layout.addView(pathInput);
 
-        final CheckBox overwriteBox = new CheckBox(a);
-        overwriteBox.setText("Ghi đè file trùng");
-        overwriteBox.setChecked(false);
-        layout.addView(overwriteBox);
+        // Sakuga: CheckBox goc -> SakugaCheckBox + TextView rieng
+        // (giong bang Thuoc tinh: CheckBox co chu bi lech chu).
+        LinearLayout owRow = new LinearLayout(a);
+        owRow.setOrientation(LinearLayout.HORIZONTAL);
+        owRow.setGravity(Gravity.CENTER_VERTICAL);
+        final SakugaCheckBox overwriteBox = new SakugaCheckBox(a);
+        owRow.addView(overwriteBox);
+        TextView owLabel = new TextView(a);
+        owLabel.setText("Ghi đè file trùng");
+        owLabel.setTextSize(15);
+        owLabel.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                overwriteBox.toggle();
+            }
+        });
+        owRow.addView(owLabel);
+        layout.addView(owRow);
 
-        new CatBuilder(a, R.style.DialogTheme)
-                .setTitle("Giải nén — " + titleSuffix)
-                .setView(layout)
-                .setPositiveButton("Giải nén", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface d, int which) {
+        // Sakuga: nut Giai nen/Huy bang SakugaButton.
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(a, layout, holder,
+                new SakugaDialogs.Action("Giải nén", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(AlertDialog dialog) {
                         String path = pathInput.getText().toString().trim();
                         if (path.isEmpty()) {
                             Toast.makeText(a, "Đường dẫn đích không được để trống",
                                     Toast.LENGTH_SHORT).show();
-                            return;
+                            return false;
                         }
                         final File destDir = new File(path);
                         final boolean overwrite = overwriteBox.isChecked();
@@ -1394,10 +1481,15 @@ public class ArchiveDialogs {
                         } else {
                             startExtract(a, destDir, overwrite, null, config, successMsg, onDone);
                         }
+                        return true;
                     }
-                })
-                .setNegativeButton("Hủy", null)
+                }),
+                new SakugaDialogs.Action("Hủy", false, null));
+        AlertDialog dialog = new CatBuilder(a, R.style.DialogTheme)
+                .setTitle("Giải nén — " + titleSuffix)
+                .setView(layout)
                 .show();
+        holder.dialog = dialog;
     }
 
     /**
@@ -1431,9 +1523,23 @@ public class ArchiveDialogs {
         final ProgressBar bar = (ProgressBar) dlg.findViewById(R.id.progressBar);
         final TextView tvPercent = (TextView) dlg.findViewById(R.id.tvPercent);
         final TextView tvFile = (TextView) dlg.findViewById(R.id.tvFile);
-        final Button btnHide = (Button) dlg.findViewById(R.id.btnHide);
-        final Button btnCancel = (Button) dlg.findViewById(R.id.btnCancel);
-        final CheckBox cbKeepScreen = (CheckBox) dlg.findViewById(R.id.cbKeepScreen);
+        // Sakuga: nut HUY/AN + checkbox Giu man hinh bang Sakuga.
+        final SakugaButton btnHide = (SakugaButton) dlg.findViewById(R.id.btnHide);
+        final SakugaButton btnCancel = (SakugaButton) dlg.findViewById(R.id.btnCancel);
+        // test5: compact (nut dialog nho gon).
+        if (btnHide != null) btnHide.setCompact(true);
+        if (btnCancel != null) btnCancel.setCompact(true);
+        final SakugaCheckBox cbKeepScreen =
+                (SakugaCheckBox) dlg.findViewById(R.id.cbKeepScreen);
+        if (btnHide != null) btnHide.setVariant(SakugaButton.VARIANT_SECONDARY);
+        android.view.View keepLabel = dlg.findViewById(R.id.cbKeepScreen_label);
+        if (keepLabel != null && cbKeepScreen != null) {
+            keepLabel.setOnClickListener(new android.view.View.OnClickListener() {
+                @Override public void onClick(android.view.View v) {
+                    cbKeepScreen.toggle();
+                }
+            });
+        }
 
         tvTitle.setText(progressTitle);
         final AnimatedRainbowDrawable rainbowDrawable = applyAnimatedRainbow(bar, a);
@@ -1449,9 +1555,9 @@ public class ArchiveDialogs {
 
         // Checkbox "Giữ cho màn hình bật" -> FLAG_KEEP_SCREEN_ON
         if (cbKeepScreen != null) {
-            cbKeepScreen.setOnCheckedChangeListener(new CompoundButton.OnCheckedChangeListener() {
+            cbKeepScreen.setOnCheckedChangeListener(new SakugaCheckBox.OnCheckedChangeListener() {
                 @Override
-                public void onCheckedChanged(CompoundButton buttonView, boolean isChecked) {
+                public void onCheckedChanged(SakugaCheckBox box, boolean isChecked) {
                     Window w = dlg.getWindow();
                     if (w == null) return;
                     if (isChecked) {
@@ -1471,15 +1577,19 @@ public class ArchiveDialogs {
         final ProgressNotification[] notif = new ProgressNotification[]{null};
 
         // --- "Hủy": stop the op, close dialog, toast "Đã hủy" ---
+        // Sakuga: dap tick roi dong sau 320ms (de thay tick).
         btnCancel.setOnClickListener(new android.view.View.OnClickListener() {
             @Override
             public void onClick(android.view.View v) {
                 token.cancel();
                 cancelClicked[0] = true;
                 rainbowDrawable.stop();
-                safeDismiss(dlg);
                 dialogVisible[0] = false;
                 Toast.makeText(a, "Đã hủy", Toast.LENGTH_SHORT).show();
+                btnCancel.done();
+                v.postDelayed(new Runnable() {
+                    @Override public void run() { safeDismiss(dlg); }
+                }, 320);
             }
         });
 
@@ -1490,7 +1600,10 @@ public class ArchiveDialogs {
                 if (!dialogVisible[0]) return;
                 dialogVisible[0] = false;
                 rainbowDrawable.stop();
-                safeDismiss(dlg);
+                btnHide.done();
+                v.postDelayed(new Runnable() {
+                    @Override public void run() { safeDismiss(dlg); }
+                }, 320);
             }
         });
 

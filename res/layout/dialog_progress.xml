@@ -88,18 +88,29 @@
                 android:max="100"
                 android:progress="0" />
 
-            <!-- Checkbox giữ màn hình bật -->
-            <CheckBox
-                android:id="@+id/cbKeepScreen"
-                android:layout_width="wrap_content"
+            <!-- Checkbox giữ màn hình bật (Sakuga) -->
+            <LinearLayout
+                android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:layout_marginTop="12dp"
-                android:text="Giữ cho màn hình bật"
-                android:textColor="#FFFFFF"
-                android:textSize="14sp"
-                android:buttonTint="#AB47BC" />
+                android:orientation="horizontal"
+                android:gravity="center_vertical"
+                android:layout_marginTop="12dp">
 
-            <!-- 2 nút chữ -->
+                <com.kaizen.tool.SakugaCheckBox
+                    android:id="@+id/cbKeepScreen"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content" />
+
+                <TextView
+                    android:id="@+id/cbKeepScreen_label"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Giữ cho màn hình bật"
+                    android:textColor="#FFFFFF"
+                    android:textSize="14sp" />
+            </LinearLayout>
+
+            <!-- 2 nút Sakuga -->
             <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
@@ -107,29 +118,17 @@
                 android:orientation="horizontal"
                 android:gravity="end">
 
-                <Button
+                <com.kaizen.tool.SakugaButton
                     android:id="@+id/btnCancel"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="HUỶ"
-                    android:textColor="#CE93D8"
-                    android:textSize="14sp"
-                    android:textStyle="bold"
-                    android:background="?android:attr/selectableItemBackground"
-                    android:paddingStart="16dp"
-                    android:paddingEnd="16dp" />
+                    android:text="HUỶ" />
 
-                <Button
+                <com.kaizen.tool.SakugaButton
                     android:id="@+id/btnHide"
                     android:layout_width="wrap_content"
                     android:layout_height="wrap_content"
-                    android:text="ẨN"
-                    android:textColor="#CE93D8"
-                    android:textSize="14sp"
-                    android:textStyle="bold"
-                    android:background="?android:attr/selectableItemBackground"
-                    android:paddingStart="16dp"
-                    android:paddingEnd="16dp" />
+                    android:text="ẨN" />
             </LinearLayout>
             </LinearLayout>
         </FrameLayout>

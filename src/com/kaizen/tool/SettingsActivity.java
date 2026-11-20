@@ -2,14 +2,15 @@ package com.kaizen.tool;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.DialogInterface;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
 import android.view.View;
 import android.widget.Button;
+import android.widget.LinearLayout;
 import android.widget.RadioButton;
 import android.widget.RadioGroup;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -129,6 +130,12 @@ public class SettingsActivity extends Activity {
                     @Override public void onClick(View v) { clearSessions(); }
                 });
 
+        // ---- Nhật ký lỗi cài đặt (v1.3-m4-test1) ----
+        ((Button) findViewById(R.id.btn_view_error_log))
+                .setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) { showErrorLog(); }
+                });
+
         // ---- Shizuku (real status via ShizukuHelper) ----
         shizukuStatus = (TextView) findViewById(R.id.shizuku_status);
         shizukuBtn = (Button) findViewById(R.id.btn_shizuku);
@@ -240,21 +247,35 @@ public class SettingsActivity extends Activity {
                                             ? lsResult.substring(0, 200) + "..."
                                             : lsResult;
                             if (echoOk) {
-                                new CatBuilder(SettingsActivity.this, R.style.DialogTheme)
-                                        .setTitle("Shizuku test")
-                                        .setMessage("✓ echo OK!"
+                                // Sakuga: nut OK bang SakugaButton.
+                                LinearLayout content = SakugaDialogs.messageLayout(
+                                        SettingsActivity.this,
+                                        "✓ echo OK!"
                                                 + "\n\nls /Android/data:\n" + lsPreview
-                                                + "\n\nPermission callback: " + permFlag)
-                                        .setPositiveButton("OK", null)
+                                                + "\n\nPermission callback: " + permFlag);
+                                final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+                                SakugaDialogs.addButtonRow(SettingsActivity.this, content, holder,
+                                        new SakugaDialogs.Action("OK", true, null));
+                                AlertDialog dialog = new CatBuilder(SettingsActivity.this, R.style.DialogTheme)
+                                        .setTitle("Shizuku test")
+                                        .setView(content)
                                         .show();
+                                holder.dialog = dialog;
                             } else {
-                                new CatBuilder(SettingsActivity.this, R.style.DialogTheme)
-                                        .setTitle("Shizuku test thất bại")
-                                        .setMessage("Kết quả: " + (echoResult == null ? "null" : echoResult)
+                                // Sakuga: nut OK bang SakugaButton.
+                                LinearLayout content = SakugaDialogs.messageLayout(
+                                        SettingsActivity.this,
+                                        "Kết quả: " + (echoResult == null ? "null" : echoResult)
                                                 + "\n\nPermission callback: " + permFlag
-                                                + "\n\nChụp màn hình này gửi cho Gose nhé!")
-                                        .setPositiveButton("OK", null)
+                                                + "\n\nChụp màn hình này gửi cho Gose nhé!");
+                                final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+                                SakugaDialogs.addButtonRow(SettingsActivity.this, content, holder,
+                                        new SakugaDialogs.Action("OK", true, null));
+                                AlertDialog dialog = new CatBuilder(SettingsActivity.this, R.style.DialogTheme)
+                                        .setTitle("Shizuku test thất bại")
+                                        .setView(content)
                                         .show();
+                                holder.dialog = dialog;
                             }
                         }
                     });
@@ -271,33 +292,39 @@ public class SettingsActivity extends Activity {
 
     /** Hướng dẫn khởi động Shizuku khi đã cài nhưng chưa chạy. */
     private void showShizukuStartGuide() {
-        new CatBuilder(this, R.style.DialogTheme)
-                .setTitle("Kết nối Shizuku")
-                .setMessage("Kaizen Tool chưa xuất hiện trong Shizuku.\n\n"
+        // Sakuga: nut Mo app Shizuku/Dong bang SakugaButton.
+        LinearLayout content = SakugaDialogs.messageLayout(this,
+                "Kaizen Tool chưa xuất hiện trong Shizuku.\n\n"
                         + "Làm theo các bước:\n"
                         + "1. Mở app Shizuku\n"
                         + "2. Bấm \"Bắt đầu\" để chạy (nếu chưa chạy)\n"
                         + "3. Quay lại đây, bấm nút Shizuku\n"
                         + "4. Cấp quyền khi Shizuku hỏi\n\n"
                         + "Nếu vẫn không được: trong app Shizuku, "
-                        + "dừng rồi khởi động lại Shizuku.")
-                .setPositiveButton("Mở app Shizuku",
-                        new DialogInterface.OnClickListener() {
-                            @Override public void onClick(DialogInterface d, int w) {
-                                try {
-                                    Intent i = getPackageManager()
-                                            .getLaunchIntentForPackage(
-                                                    ShizukuHelper.SHIZUKU_PACKAGE);
-                                    if (i != null) startActivity(i);
-                                } catch (Exception e) {
-                                    Toast.makeText(SettingsActivity.this,
-                                            "Không mở được app Shizuku",
-                                            Toast.LENGTH_SHORT).show();
-                                }
-                            }
-                        })
-                .setNegativeButton("Đóng", null)
+                        + "dừng rồi khởi động lại Shizuku.");
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, content, holder,
+                new SakugaDialogs.Action("Mở app Shizuku", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(AlertDialog dialog) {
+                        try {
+                            Intent i = getPackageManager()
+                                    .getLaunchIntentForPackage(
+                                            ShizukuHelper.SHIZUKU_PACKAGE);
+                            if (i != null) startActivity(i);
+                        } catch (Exception e) {
+                            Toast.makeText(SettingsActivity.this,
+                                    "Không mở được app Shizuku",
+                                    Toast.LENGTH_SHORT).show();
+                        }
+                        return true;
+                    }
+                }),
+                new SakugaDialogs.Action("Đóng", false, null));
+        AlertDialog dialog = new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("Kết nối Shizuku")
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     private void clearCache() {
@@ -332,6 +359,36 @@ public class SettingsActivity extends Activity {
                 });
             }
         }).start();
+    }
+
+    /** Hiện lỗi cài đặt mới nhất (chỉ 1 lỗi, không danh sách). */
+    private void showErrorLog() {
+        String err = SplitApkInstaller.getLastError(this);
+        if (err == null || err.trim().isEmpty()) {
+            Toast.makeText(this, "Chưa có lỗi cài đặt nào",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        TextView tv = new TextView(this);
+        tv.setText(err);
+        tv.setTextIsSelectable(true);
+        tv.setTextSize(14);
+        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        tv.setPadding(pad, pad, pad, pad);
+        ScrollView sv = new ScrollView(this);
+        sv.addView(tv);
+        // Sakuga: nut Dong bang SakugaButton.
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.addView(sv);
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(this, content, holder,
+                new SakugaDialogs.Action("Đóng", true, null));
+        AlertDialog dialog = new CatBuilder(this, R.style.DialogTheme)
+                .setTitle("Lỗi cài đặt gần nhất")
+                .setView(content)
+                .show();
+        holder.dialog = dialog;
     }
 
     private static boolean deleteRecursive(File f) {

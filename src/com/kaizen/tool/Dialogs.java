@@ -4,12 +4,11 @@ import java.io.File;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.DialogInterface;
 import android.os.Handler;
 import android.os.Looper;
 import android.text.InputType;
 import android.view.Gravity;
-import android.widget.CheckBox;
+import android.view.View;
 import android.widget.EditText;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -45,17 +44,19 @@ public class Dialogs {
         int end = (f.isFile() && dot > 0) ? dot : current.length();
         input.setSelection(0, end);
 
-        new CatBuilder(a, R.style.DialogTheme)
-                .setTitle("Đổi tên")
-                .setView(pad(a, input))
-                .setPositiveButton("Lưu", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface d, int which) {
+        // Sakuga: nut Luu/Huy bang SakugaButton (thay nut AlertDialog goc).
+        // Luu that bai (ten sai / doi ten that bai) -> tra false de giu
+        // dialog mo cho user sua lai (nut goc tu dong dong bat ke).
+        LinearLayout content = pad(a, input);
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(a, content, holder,
+                new SakugaDialogs.Action("Lưu", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(AlertDialog dialog) {
                         String newName = input.getText().toString().trim();
                         String err = validateName(newName);
                         if (err != null) {
                             Toast.makeText(a, err, Toast.LENGTH_SHORT).show();
-                            return;
+                            return false;
                         }
                         boolean ok;
                         if (viaShizuku) {
@@ -68,13 +69,18 @@ public class Dialogs {
                         }
                         if (!ok) {
                             Toast.makeText(a, "Đổi tên thất bại (có thể tên đã tồn tại)", Toast.LENGTH_SHORT).show();
-                            return;
+                            return false;
                         }
                         if (onDone != null) onDone.run();
+                        return true;
                     }
-                })
-                .setNegativeButton("Hủy", null)
+                }),
+                new SakugaDialogs.Action("Hủy", false, null));
+        AlertDialog dialog = new CatBuilder(a, R.style.DialogTheme)
+                .setTitle("Đổi tên")
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     public static void showNewFolder(final Activity a, final File parent, final Runnable onDone) {
@@ -89,17 +95,17 @@ public class Dialogs {
         if (a == null || parent == null) return;
         final EditText input = makeInput(a, "Thư mục mới");
 
-        new CatBuilder(a, R.style.DialogTheme)
-                .setTitle("Thư mục mới")
-                .setView(pad(a, input))
-                .setPositiveButton("Tạo", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface d, int which) {
+        // Sakuga: nut Tao/Huy bang SakugaButton (xem showRename).
+        LinearLayout content = pad(a, input);
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(a, content, holder,
+                new SakugaDialogs.Action("Tạo", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(AlertDialog dialog) {
                         String name = input.getText().toString().trim();
                         String err = validateName(name);
                         if (err != null) {
                             Toast.makeText(a, err, Toast.LENGTH_SHORT).show();
-                            return;
+                            return false;
                         }
                         boolean ok;
                         if (viaShizuku) {
@@ -109,13 +115,18 @@ public class Dialogs {
                         }
                         if (!ok) {
                             Toast.makeText(a, "Tạo thư mục thất bại (có thể đã tồn tại)", Toast.LENGTH_SHORT).show();
-                            return;
+                            return false;
                         }
                         if (onDone != null) onDone.run();
+                        return true;
                     }
-                })
-                .setNegativeButton("Hủy", null)
+                }),
+                new SakugaDialogs.Action("Hủy", false, null));
+        AlertDialog dialog = new CatBuilder(a, R.style.DialogTheme)
+                .setTitle("Thư mục mới")
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     public static void showNewFile(final Activity a, final File parent, final Runnable onDone) {
@@ -129,17 +140,17 @@ public class Dialogs {
         if (a == null || parent == null) return;
         final EditText input = makeInput(a, "tệp mới.txt");
 
-        new CatBuilder(a, R.style.DialogTheme)
-                .setTitle("Tệp mới")
-                .setView(pad(a, input))
-                .setPositiveButton("Tạo", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface d, int which) {
+        // Sakuga: nut Tao/Huy bang SakugaButton (xem showRename).
+        LinearLayout content = pad(a, input);
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(a, content, holder,
+                new SakugaDialogs.Action("Tạo", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(AlertDialog dialog) {
                         String name = input.getText().toString().trim();
                         String err = validateName(name);
                         if (err != null) {
                             Toast.makeText(a, err, Toast.LENGTH_SHORT).show();
-                            return;
+                            return false;
                         }
                         boolean ok;
                         if (viaShizuku) {
@@ -149,13 +160,18 @@ public class Dialogs {
                         }
                         if (!ok) {
                             Toast.makeText(a, "Tạo tệp thất bại (có thể đã tồn tại)", Toast.LENGTH_SHORT).show();
-                            return;
+                            return false;
                         }
                         if (onDone != null) onDone.run();
+                        return true;
                     }
-                })
-                .setNegativeButton("Hủy", null)
+                }),
+                new SakugaDialogs.Action("Hủy", false, null));
+        AlertDialog dialog = new CatBuilder(a, R.style.DialogTheme)
+                .setTitle("Tệp mới")
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     // ------------------------------------------------------------------
@@ -231,13 +247,15 @@ public class Dialogs {
             // v1.1-m3 fix: ĐỪNG dùng CheckBox có text (chữ bị lệch khỏi ô vuông
             // trên một số máy) — thay bằng LinearLayout ngang: CheckBox trần
             // (chỉ ô vuông) + TextView. Bấm vào chữ cũng toggle như bấm ô vuông.
+            // Sakuga test (1.3-m4-sakuga-test1): CheckBox goc -> SakugaCheckBox
+            // (tick ve dan + burst hong + chu ポン), interface giong CheckBox.
             LinearLayout nomediaRow = new LinearLayout(a);
             nomediaRow.setOrientation(LinearLayout.HORIZONTAL);
             nomediaRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
             int cp = dp(a, 8);
             nomediaRow.setPadding(0, cp, 0, 0);
 
-            final CheckBox nomediaBox = new CheckBox(a);
+            final SakugaCheckBox nomediaBox = new SakugaCheckBox(a);
 
             TextView nomediaLabel = new TextView(a);
             nomediaLabel.setText("Vô hiệu hoá quét đa phương tiện");
@@ -265,10 +283,10 @@ public class Dialogs {
             }
             nomediaBox.setChecked(hasNomedia);
             nomediaBox.setOnCheckedChangeListener(
-                    new android.widget.CompoundButton.OnCheckedChangeListener() {
+                    new SakugaCheckBox.OnCheckedChangeListener() {
                 @Override
                 public void onCheckedChanged(
-                        android.widget.CompoundButton buttonView, final boolean isChecked) {
+                        SakugaCheckBox buttonView, final boolean isChecked) {
                     if (isShizukuPath && ShizukuHelper.isRunning()) {
                         // Chạy background để không block UI
                         new Thread(new Runnable() {
@@ -314,11 +332,30 @@ public class Dialogs {
             layout.addView(nomediaRow);
         }
 
-        new CatBuilder(a, R.style.DialogTheme)
+        // Sakuga test (1.3-m4-sakuga-test1): nut ĐÓNG bang SakugaButton
+        // (thay nut dialog goc). Bam -> burst + ドン -> done() dap tick
+        // -> dong dialog sau 320ms de thay tick.
+        final SakugaButton closeBtn = new SakugaButton(a);
+        closeBtn.setText("ĐÓNG");
+        LinearLayout closeRow = new LinearLayout(a);
+        closeRow.setOrientation(LinearLayout.HORIZONTAL);
+        closeRow.setGravity(Gravity.END);
+        closeRow.setPadding(0, dp(a, 12), 0, 0);
+        closeRow.addView(closeBtn);
+        layout.addView(closeRow);
+
+        final AlertDialog dialog = new CatBuilder(a, R.style.DialogTheme)
                 .setTitle("Thuộc tính")
                 .setView(layout)
-                .setPositiveButton("Đóng", null)
                 .show();
+        closeBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                closeBtn.done();
+                v.postDelayed(new Runnable() {
+                    @Override public void run() { dialog.dismiss(); }
+                }, 320);
+            }
+        });
 
         // Folder size is computed on a background thread, then posted to UI.
         // v1.2-m4 fix: đường Shizuku trước đây bị bỏ qua (kẹt "đang tính..."
@@ -383,17 +420,23 @@ public class Dialogs {
 
     public static void showDeleteConfirm(Activity a, int count, final Runnable onYes) {
         if (a == null) return;
-        new CatBuilder(a, R.style.DialogTheme)
-                .setTitle("Xóa")
-                .setMessage("Xóa " + count + " mục đã chọn? Không thể hoàn tác.")
-                .setPositiveButton("Xóa", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface d, int which) {
+        // Sakuga: nut Xoa/Huy bang SakugaButton (thay nut AlertDialog goc).
+        LinearLayout content = SakugaDialogs.messageLayout(a,
+                "Xóa " + count + " mục đã chọn? Không thể hoàn tác.");
+        final SakugaDialogs.Holder holder = SakugaDialogs.holder();
+        SakugaDialogs.addButtonRow(a, content, holder,
+                new SakugaDialogs.Action("Xóa", true, new SakugaDialogs.OnAction() {
+                    @Override public boolean run(AlertDialog dialog) {
                         if (onYes != null) onYes.run();
+                        return true;
                     }
-                })
-                .setNegativeButton("Hủy", null)
+                }),
+                new SakugaDialogs.Action("Hủy", false, null));
+        AlertDialog dialog = new CatBuilder(a, R.style.DialogTheme)
+                .setTitle("Xóa")
+                .setView(content)
                 .show();
+        holder.dialog = dialog;
     }
 
     // ------------------------------------------------------------------
@@ -410,6 +453,11 @@ public class Dialogs {
 
     private static LinearLayout pad(Activity a, EditText input) {
         LinearLayout wrap = new LinearLayout(a);
+        // FIX 20/11 (test3): LinearLayout mac dinh la HORIZONTAL — quen
+        // set VERTICAL lam hang nut Sakuga bi day ra ngoai man hinh
+        // (EditText MATCH_PARENT chiem het chieu ngang) nen dialog Doi ten
+        // / Tao thu muc / Tao tep khong thay nut Luu/Tao/Huy.
+        wrap.setOrientation(LinearLayout.VERTICAL);
         int p = dp(a, 16);
         wrap.setPadding(p, dp(a, 8), p, dp(a, 4));
         // 26/10 (feedback Kazoi, dialog Doi ten): EditText mac dinh

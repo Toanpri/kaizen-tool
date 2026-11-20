@@ -220,7 +220,7 @@ public class ApkDialogs {
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
-        rlp.topMargin = dp(a, 18);
+        rlp.topMargin = dp(a, 12); // test5: 18 -> 12 (dialog bớt sâu)
         btnRow.setLayoutParams(rlp);
         root.addView(btnRow);
 
@@ -233,36 +233,34 @@ public class ApkDialogs {
                             android.graphics.Color.TRANSPARENT));
         }
 
-        TextView cancel = new TextView(a);
+        // Sakuga: nut HUY / CAI DAT bang SakugaButton (thay TextView gia nut).
+        // test5: compact (nut dialog nho gon).
+        final SakugaButton cancel = new SakugaButton(a);
         cancel.setText("H\u1ee6Y");
-        cancel.setTextSize(14);
-        cancel.setTextColor(GRAY);
-        cancel.getPaint().setFakeBoldText(true);
-        cancel.setPadding(dp(a, 12), dp(a, 12), dp(a, 12), dp(a, 12));
-        cancel.setBackgroundDrawable(a.getResources().getDrawable(
-                android.R.drawable.list_selector_background));
+        cancel.setCompact(true);
+        cancel.setVariant(SakugaButton.VARIANT_SECONDARY);
         cancel.setOnClickListener(new android.view.View.OnClickListener() {
-            @Override public void onClick(android.view.View v) { dlg.dismiss(); }
+            @Override public void onClick(android.view.View v) {
+                cancel.done();
+                v.postDelayed(new Runnable() {
+                    @Override public void run() { dlg.dismiss(); }
+                }, 320);
+            }
         });
         btnRow.addView(cancel);
 
-        TextView install = new TextView(a);
+        final SakugaButton install = new SakugaButton(a);
         install.setText(installedVer != null ? "C\u00c0I \u0110\u1eb6T L\u1ea0I" : "C\u00c0I \u0110\u1eb6T");
-        install.setTextSize(14);
-        install.setTextColor(0xFFFFFFFF);
-        install.getPaint().setFakeBoldText(true);
-        install.setBackgroundDrawable(
-                a.getResources().getDrawable(R.drawable.btn_pink));
-        install.setPadding(dp(a, 24), dp(a, 12), dp(a, 24), dp(a, 12));
-        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        ilp.setMargins(dp(a, 8), 0, 0, 0);
-        install.setLayoutParams(ilp);
+        install.setCompact(true);
         install.setOnClickListener(new android.view.View.OnClickListener() {
             @Override public void onClick(android.view.View v) {
-                dlg.dismiss();
-                ApkUtils.installApk(a, apkFile);
+                install.done();
+                v.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        dlg.dismiss();
+                        ApkUtils.installApk(a, apkFile);
+                    }
+                }, 320);
             }
         });
         btnRow.addView(install);
@@ -471,7 +469,7 @@ public class ApkDialogs {
         LinearLayout.LayoutParams rlp = new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
-        rlp.topMargin = dp(a, 18);
+        rlp.topMargin = dp(a, 12); // test5: 18 -> 12 (dialog bớt sâu)
         btnRow.setLayoutParams(rlp);
         root.addView(btnRow);
 
@@ -493,39 +491,35 @@ public class ApkDialogs {
             }
         });
 
-        TextView cancel = new TextView(a);
+        // Sakuga: nut HUY / CAI DAT bang SakugaButton (thay TextView gia nut).
+        // test5: compact (nut dialog nho gon).
+        final SakugaButton cancel = new SakugaButton(a);
         cancel.setText("HỦY");
-        cancel.setTextSize(14);
-        cancel.setTextColor(GRAY);
-        cancel.getPaint().setFakeBoldText(true);
-        cancel.setPadding(dp(a, 12), dp(a, 12), dp(a, 12), dp(a, 12));
-        cancel.setBackgroundDrawable(a.getResources().getDrawable(
-                android.R.drawable.list_selector_background));
+        cancel.setCompact(true);
+        cancel.setVariant(SakugaButton.VARIANT_SECONDARY);
         cancel.setOnClickListener(new android.view.View.OnClickListener() {
             @Override public void onClick(android.view.View v) {
-                dlg.dismiss();
+                cancel.done();
+                v.postDelayed(new Runnable() {
+                    @Override public void run() { dlg.dismiss(); }
+                }, 320);
             }
         });
         btnRow.addView(cancel);
 
-        TextView install = new TextView(a);
+        final SakugaButton install = new SakugaButton(a);
         install.setText(installedVer != null ? "CÀI ĐẶT LẠI" : "CÀI ĐẶT");
-        install.setTextSize(14);
-        install.setTextColor(0xFFFFFFFF);
-        install.getPaint().setFakeBoldText(true);
-        install.setBackgroundDrawable(
-                a.getResources().getDrawable(R.drawable.btn_pink));
-        install.setPadding(dp(a, 24), dp(a, 12), dp(a, 24), dp(a, 12));
-        LinearLayout.LayoutParams ilp = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        ilp.setMargins(dp(a, 8), 0, 0, 0);
-        install.setLayoutParams(ilp);
+        install.setCompact(true);
         install.setOnClickListener(new android.view.View.OnClickListener() {
             @Override public void onClick(android.view.View v) {
                 transferred[0] = true;
-                dlg.dismiss();
-                SplitApkInstaller.install(a, c);
+                install.done();
+                v.postDelayed(new Runnable() {
+                    @Override public void run() {
+                        dlg.dismiss();
+                        SplitApkInstaller.install(a, c);
+                    }
+                }, 320);
             }
         });
         btnRow.addView(install);
